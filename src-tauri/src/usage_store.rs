@@ -93,6 +93,7 @@ impl UsageStore {
         Ok(self.outcome(state, status, backup_path))
     }
 
+    #[cfg(test)]
     pub fn clear_snapshot(&self) -> Result<LoadOutcome, StoreError> {
         let loaded = self.load()?;
         let status = mutation_status(&loaded.status);

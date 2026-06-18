@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppState, QuotaReading, QuotaSnapshot } from "$lib/types/usage";
+  import type { AppState, QuotaReading } from "$lib/types/usage";
   import {
     formatCapturedAt,
     formatPercent,
@@ -10,19 +10,11 @@
   } from "$lib/utils/format";
 
   export let appState: AppState | null;
-  export let parsedDraft: QuotaSnapshot | null = null;
-  export let pasteText = "";
   export let loading = false;
   export let refreshing = false;
-  export let parsing = false;
-  export let saving = false;
   export let errorMessage: string | null = null;
   export let noticeMessage: string | null = null;
   export let onRefresh: () => void | Promise<void> = () => {};
-  export let onParse: () => void | Promise<void> = () => {};
-  export let onSave: () => void | Promise<void> = () => {};
-  export let onClear: () => void | Promise<void> = () => {};
-  export let onPasteInput: (value: string) => void = () => {};
 
   const emptyReading: QuotaReading = {
     remainingPercent: null,
@@ -30,7 +22,7 @@
     resetCountdownSeconds: null,
   };
 
-  $: snapshot = parsedDraft ?? appState?.latestSnapshot ?? null;
+  $: snapshot = appState?.latestSnapshot ?? null;
   $: fiveHour = snapshot?.fiveHour ?? emptyReading;
   $: weekly = snapshot?.weekly ?? emptyReading;
   $: statusText =
@@ -38,10 +30,10 @@
     (refreshing ? "正在后台读取 Codex /status，窗口可继续操作..." : null) ??
     noticeMessage ??
     appState?.statusMessage ??
-    "尚未获取额度。请点击自动查询或粘贴 /status。";
-  $: sourceText = parsedDraft ? "解析预览" : sourceLabel(snapshot?.source);
+    "尚未获取额度。请点击自动查询。";
+  $: sourceText = sourceLabel(snapshot?.source);
   $: updatedAt = snapshot ? formatCapturedAt(snapshot.capturedAt) : "尚未更新";
-  $: busy = loading || refreshing || parsing || saving;
+  $: busy = loading || refreshing;
 
   function progressStyle(reading: QuotaReading): string {
     return `--progress: ${progressValue(reading.remainingPercent)}%;`;
@@ -105,31 +97,7 @@
         <button class="primary" type="button" disabled={busy} on:click={onRefresh}>
           {refreshing ? "查询中" : "自动查询"}
         </button>
-        <button type="button" disabled={busy || !pasteText.trim()} on:click={onParse}>
-          {parsing ? "解析中" : "粘贴 /status 更新"}
-        </button>
-        <button type="button" disabled={busy || !parsedDraft} on:click={onSave}>
-          {saving && parsedDraft ? "保存中" : "保存解析结果"}
-        </button>
-        <button class="ghost" type="button" disabled={busy || (!snapshot && !pasteText)} on:click={onClear}>
-          清空
-        </button>
       </div>
-
-      <textarea
-        aria-label="粘贴 /status 内容"
-        placeholder="粘贴 Codex /status 输出..."
-        value={pasteText}
-        on:input={(event) => onPasteInput(event.currentTarget.value)}
-      ></textarea>
-
-      {#if snapshot?.warnings.length}
-        <ul class="warnings" data-testid="parse-warnings">
-          {#each snapshot.warnings as warning}
-            <li>{warning.message}</li>
-          {/each}
-        </ul>
-      {/if}
     </section>
   </section>
 </main>
@@ -149,8 +117,7 @@
       "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   }
 
-  :global(button),
-  :global(textarea) {
+  :global(button) {
     letter-spacing: 0;
     font: inherit;
   }
@@ -213,7 +180,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    justify-content: flex-end;
+    justify-content: center;
   }
 
   .pill {
@@ -379,43 +346,14 @@
     font-weight: 800;
   }
 
-  button.ghost {
-    color: #8ea4a7;
-  }
-
   button:disabled {
     cursor: not-allowed;
     opacity: 0.45;
   }
 
-  button:focus-visible,
-  textarea:focus-visible {
+  button:focus-visible {
     outline: 2px solid #ffcc66;
     outline-offset: 2px;
-  }
-
-  textarea {
-    min-height: 112px;
-    resize: vertical;
-    border: 1px solid #1d2a2d;
-    border-radius: 8px;
-    padding: 12px;
-    color: #f5f7fa;
-    background: #05070a;
-    font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
-    line-height: 1.45;
-  }
-
-  .warnings {
-    display: grid;
-    gap: 6px;
-    margin: 0;
-    padding: 10px 12px 10px 28px;
-    border: 1px solid rgba(255, 204, 102, 0.45);
-    border-radius: 8px;
-    color: #ffcc66;
-    background: rgba(255, 204, 102, 0.08);
-    font-size: 0.84rem;
   }
 
   @media (max-width: 720px) {

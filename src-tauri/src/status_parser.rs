@@ -33,6 +33,7 @@ impl ParseClock {
     }
 }
 
+#[cfg(test)]
 pub fn parse_status_text(raw_text: &str, clock: ParseClock) -> ParseResult {
     parse_status_text_with_source(raw_text, clock, SnapshotSource::PastedStatus)
 }

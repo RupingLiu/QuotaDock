@@ -1,8 +1,5 @@
 use crate::models::{AppState, QuotaSnapshot, RefreshUsageResult, SnapshotSource};
-use crate::status_parser::{
-    parse_status_text as parse_status_text_impl, parse_status_text_with_source, ParseClock,
-    ParseResult,
-};
+use crate::status_parser::{parse_status_text_with_source, ParseClock};
 use crate::usage_store::{StoreError, UsageStore};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,33 +11,6 @@ pub fn get_app_state(app: AppHandle) -> Result<AppState, String> {
     let state = load_app_state(&app)?;
     sync_tray(&app, &state);
     Ok(state)
-}
-
-#[tauri::command]
-pub fn parse_status_text(raw_text: String) -> ParseResult {
-    parse_status_text_impl(&raw_text, ParseClock::now())
-}
-
-#[tauri::command]
-pub fn save_snapshot(app: AppHandle, snapshot: QuotaSnapshot) -> Result<AppState, String> {
-    let store = store_for_app(&app)?;
-    let app_state = store
-        .save_snapshot(snapshot)
-        .map(|outcome| outcome.into_app_state())
-        .map_err(to_command_error)?;
-    sync_tray(&app, &app_state);
-    Ok(app_state)
-}
-
-#[tauri::command]
-pub fn clear_snapshot(app: AppHandle) -> Result<AppState, String> {
-    let store = store_for_app(&app)?;
-    let app_state = store
-        .clear_snapshot()
-        .map(|outcome| outcome.into_app_state())
-        .map_err(to_command_error)?;
-    sync_tray(&app, &app_state);
-    Ok(app_state)
 }
 
 #[tauri::command]
@@ -111,7 +81,7 @@ fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
     if result.snapshot.has_any_usage() {
         Ok(result.snapshot)
     } else {
-        Err("Codex CLI 没有返回可识别的额度，请粘贴 /status。".to_string())
+        Err("Codex CLI 没有返回可识别的额度，请稍后重试。".to_string())
     }
 }
 
@@ -133,7 +103,7 @@ fn fetch_usage_from_structured_cli() -> Result<String, String> {
     if output.success {
         Ok(output.stdout)
     } else {
-        Err("Codex CLI 额度查询失败，请粘贴 /status。".to_string())
+        Err("Codex CLI 额度查询失败，请稍后重试。".to_string())
     }
 }
 
@@ -151,7 +121,7 @@ fn run_codex_status_pty(timeout: Duration) -> Result<String, String> {
     {
         let _ = target;
         let _ = timeout;
-        Err("自动查询当前仅支持 Windows，请粘贴 /status。".to_string())
+        Err("自动查询当前仅支持 Windows。".to_string())
     }
 }
 
@@ -367,10 +337,10 @@ mod windows_conpty {
                 }
 
                 if self.has_exited() {
-                    return Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string());
+                    return Err("Codex CLI /status 自动查询失败，请稍后重试。".to_string());
                 }
                 if started.elapsed() > timeout {
-                    return Err("Codex CLI 查询超时，请粘贴 /status。".to_string());
+                    return Err("Codex CLI 查询超时，请稍后重试。".to_string());
                 }
                 thread::sleep(Duration::from_millis(50));
             }
@@ -546,7 +516,7 @@ mod windows_conpty {
                 if codex_status_output_ready(&text) {
                     return Ok(text);
                 }
-                return Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string());
+                return Err("Codex CLI /status 自动查询失败，请稍后重试。".to_string());
             }
 
             if started.elapsed() > timeout {
@@ -569,7 +539,7 @@ mod windows_conpty {
         if codex_status_output_ready(&text) {
             return Ok(text);
         }
-        Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string())
+        Err("Codex CLI /status 自动查询失败，请稍后重试。".to_string())
     }
 
     fn respond_to_cursor_query(
@@ -761,7 +731,7 @@ mod windows_conpty {
             if codex_status_output_ready(&text) {
                 return Ok(text);
             }
-            Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string())
+            Err("Codex CLI /status 自动查询失败，请稍后重试。".to_string())
         }
     }
 
@@ -1173,7 +1143,7 @@ fn run_codex(args: &[&str], timeout: Duration) -> Result<CodexOutput, String> {
         if started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Codex CLI 查询超时，请粘贴 /status。".to_string());
+            return Err("Codex CLI 查询超时，请稍后重试。".to_string());
         }
 
         match child.try_wait() {

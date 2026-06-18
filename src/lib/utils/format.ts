@@ -39,7 +39,7 @@ export function sourceLabel(source: SnapshotSource | null | undefined): string {
     return "Codex CLI";
   }
   if (source === "pasted-status") {
-    return "粘贴 /status";
+    return "本地数据";
   }
   return "未连接";
 }

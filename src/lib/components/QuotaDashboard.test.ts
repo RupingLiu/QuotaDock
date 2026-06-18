@@ -55,31 +55,28 @@ describe("QuotaDashboard", () => {
     render(QuotaDashboard, {
       props: {
         appState: null,
-        noticeMessage: "当前 Codex CLI 未提供额度查询，请粘贴 /status。",
+        noticeMessage: "当前无法自动查询，请确认 Codex CLI 可用后重试。",
       },
     });
 
-    expect(screen.getByTestId("status-message").textContent).toContain("请粘贴 /status");
+    expect(screen.getByTestId("status-message").textContent).toContain("确认 Codex CLI 可用");
   });
 
-  it("emits paste text and parse actions", async () => {
-    const onPasteInput = vi.fn();
-    const onParse = vi.fn();
+  it("keeps only the automatic query action", async () => {
+    const onRefresh = vi.fn();
     render(QuotaDashboard, {
       props: {
         appState: null,
-        pasteText: "5h remaining: 72%",
-        onPasteInput,
-        onParse,
+        onRefresh,
       },
     });
 
-    await fireEvent.input(screen.getByLabelText("粘贴 /status 内容"), {
-      target: { value: "1w remaining: 46%" },
-    });
-    await fireEvent.click(screen.getByText("粘贴 /status 更新"));
+    await fireEvent.click(screen.getByText("自动查询"));
 
-    expect(onPasteInput).toHaveBeenCalledWith("1w remaining: 46%");
-    expect(onParse).toHaveBeenCalled();
+    expect(onRefresh).toHaveBeenCalled();
+    expect(screen.queryByText("粘贴 /status 更新")).toBeNull();
+    expect(screen.queryByText("保存解析结果")).toBeNull();
+    expect(screen.queryByText("清空")).toBeNull();
+    expect(screen.queryByLabelText("粘贴 /status 内容")).toBeNull();
   });
 });
