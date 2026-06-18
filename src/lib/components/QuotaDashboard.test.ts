@@ -37,7 +37,7 @@ describe("QuotaDashboard", () => {
   it("renders the Chinese data deck with both quota windows", () => {
     render(QuotaDashboard, { props: { appState } });
 
-    expect(screen.getByText("Codex 额度监控舱")).toBeTruthy();
+    expect(screen.getByText("Codex 额度")).toBeTruthy();
     expect(screen.getByText("5小时额度")).toBeTruthy();
     expect(screen.getByText("1周额度")).toBeTruthy();
     expect(screen.getByTestId("five-hour-value").textContent).toContain("72%");

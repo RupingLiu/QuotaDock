@@ -27,11 +27,12 @@
   $: weekly = snapshot?.weekly ?? emptyReading;
   $: statusText =
     errorMessage ??
-    (refreshing ? "正在后台读取 Codex /status，窗口可继续操作..." : null) ??
+    (refreshing ? "正在读取 Codex 额度..." : null) ??
     noticeMessage ??
     appState?.statusMessage ??
     "尚未获取额度。请点击自动查询。";
   $: sourceText = sourceLabel(snapshot?.source);
+  $: storageText = storageLabel(appState?.storageStatus);
   $: updatedAt = snapshot ? formatCapturedAt(snapshot.capturedAt) : "尚未更新";
   $: busy = loading || refreshing;
 
@@ -41,62 +42,69 @@
 </script>
 
 <main class="shell">
-  <section class="deck" aria-label="QuotaDock 额度监控">
-    <header class="topbar">
+  <section class="window" aria-label="QuotaDock 额度监控">
+    <aside class="sidebar">
       <div>
+        <div class="traffic-lights" aria-hidden="true">
+          <span class="close"></span>
+          <span class="minimize"></span>
+          <span class="zoom"></span>
+        </div>
+
         <p class="eyebrow">QuotaDock</p>
-        <h1>Codex 额度监控舱</h1>
-      </div>
-      <div class="status-cluster" aria-label="当前状态">
-        <span class="pill">{sourceText}</span>
-        <span class="pill">{storageLabel(appState?.storageStatus)}</span>
-      </div>
-    </header>
-
-    <div class="meta-row">
-      <span>最后更新</span>
-      <strong>{updatedAt}</strong>
-    </div>
-
-    <div class="quota-grid" data-testid="quota-grid">
-      <article class="quota-cell five" aria-label="5小时额度">
-        <div class="cell-head">
-          <span>5小时额度</span>
-          <small>5H WINDOW</small>
-        </div>
-        <strong class="quota-value" data-testid="five-hour-value">
-          {formatPercent(fiveHour.remainingPercent)}
-        </strong>
-        <div class="track" aria-hidden="true">
-          <span style={progressStyle(fiveHour)}></span>
-        </div>
-        <p>下次更新 <b>{formatReset(fiveHour)}</b></p>
-      </article>
-
-      <article class="quota-cell week" aria-label="1周额度">
-        <div class="cell-head">
-          <span>1周额度</span>
-          <small>1W WINDOW</small>
-        </div>
-        <strong class="quota-value" data-testid="weekly-value">
-          {formatPercent(weekly.remainingPercent)}
-        </strong>
-        <div class="track" aria-hidden="true">
-          <span style={progressStyle(weekly)}></span>
-        </div>
-        <p>下次更新 <b>{formatReset(weekly)}</b></p>
-      </article>
-    </div>
-
-    <section class="console" aria-label="操作区">
-      <div class="message" class:error={Boolean(errorMessage)} data-testid="status-message">
-        {statusText}
+        <h1>Codex 额度</h1>
+        <p class="summary">
+          最后更新
+          <strong>{updatedAt}</strong>
+        </p>
       </div>
 
-      <div class="actions">
+      <div class="sidebar-bottom">
+        <div class="badges" aria-label="当前状态">
+          <span>{sourceText}</span>
+          <span>{storageText}</span>
+        </div>
         <button class="primary" type="button" disabled={busy} on:click={onRefresh}>
           {refreshing ? "查询中" : "自动查询"}
         </button>
+      </div>
+    </aside>
+
+    <section class="content" aria-label="额度详情">
+      <div class="quota-list" data-testid="quota-grid">
+        <article class="quota-line five" aria-label="5小时额度">
+          <div class="quota-copy">
+            <div class="line-head">
+              <span>5小时额度</span>
+              <b>下次更新 {formatReset(fiveHour)}</b>
+            </div>
+            <div class="track" aria-hidden="true">
+              <span style={progressStyle(fiveHour)}></span>
+            </div>
+          </div>
+          <strong class="quota-value" data-testid="five-hour-value">
+            {formatPercent(fiveHour.remainingPercent)}
+          </strong>
+        </article>
+
+        <article class="quota-line week" aria-label="1周额度">
+          <div class="quota-copy">
+            <div class="line-head">
+              <span>1周额度</span>
+              <b>下次更新 {formatReset(weekly)}</b>
+            </div>
+            <div class="track" aria-hidden="true">
+              <span style={progressStyle(weekly)}></span>
+            </div>
+          </div>
+          <strong class="quota-value" data-testid="weekly-value">
+            {formatPercent(weekly.remainingPercent)}
+          </strong>
+        </article>
+      </div>
+
+      <div class="status-row">
+        <span class:error={Boolean(errorMessage)} data-testid="status-message">{statusText}</span>
       </div>
     </section>
   </section>
@@ -107,14 +115,13 @@
     margin: 0;
     min-width: 320px;
     min-height: 100vh;
-    color: #f5f7fa;
+    color: #16212c;
     background:
-      linear-gradient(rgba(34, 230, 209, 0.04) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(155, 124, 255, 0.035) 1px, transparent 1px),
-      #05070a;
-    background-size: 28px 28px;
+      radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.74), transparent 28%),
+      linear-gradient(180deg, #eef2f6 0%, #e5e9ee 100%);
     font-family:
-      "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+      "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   }
 
   :global(button) {
@@ -126,159 +133,203 @@
     min-height: 100vh;
     display: grid;
     place-items: center;
-    padding: 22px;
+    padding: 20px;
   }
 
-  .deck {
-    width: min(920px, 100%);
+  .window {
+    width: min(880px, 100%);
+    min-height: 430px;
     display: grid;
-    gap: 14px;
-    padding: 18px;
-    border: 1px solid #1d2a2d;
-    border-radius: 8px;
-    background:
-      linear-gradient(135deg, rgba(34, 230, 209, 0.07), transparent 42%),
-      linear-gradient(315deg, rgba(155, 124, 255, 0.08), transparent 48%),
-      #0b1114;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 24px;
+    padding: 28px;
+    border: 1px solid rgba(111, 103, 88, 0.18);
+    border-radius: 22px;
+    background: #f6f4ef;
+    box-shadow:
+      0 24px 64px rgba(51, 64, 78, 0.16),
+      inset 0 1px 0 rgba(255, 255, 255, 0.85);
   }
 
-  .topbar,
-  .meta-row,
-  .cell-head,
-  .actions {
+  .sidebar {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 24px;
+    padding-right: 22px;
+    border-right: 1px solid rgba(111, 103, 88, 0.18);
   }
 
-  .topbar {
-    justify-content: space-between;
-    gap: 18px;
+  .traffic-lights {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+
+  .traffic-lights span {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+  }
+
+  .close {
+    background: #ff5f57;
+  }
+
+  .minimize {
+    background: #febc2e;
+  }
+
+  .zoom {
+    background: #28c840;
   }
 
   .eyebrow,
-  h1 {
+  h1,
+  .summary {
     margin: 0;
   }
 
   .eyebrow {
-    color: #22e6d1;
-    font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
+    color: #7c7569;
     font-size: 0.78rem;
-    font-weight: 700;
+    font-weight: 650;
   }
 
   h1 {
-    margin-top: 2px;
-    font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
-    font-size: 1.45rem;
-    line-height: 1.2;
+    margin-top: 6px;
+    color: #12202c;
+    font-size: 1.5rem;
+    line-height: 1.18;
+    font-weight: 780;
   }
 
-  .status-cluster,
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    justify-content: center;
-  }
-
-  .pill {
-    min-height: 28px;
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid #1d2a2d;
-    border-radius: 8px;
-    padding: 0 10px;
-    color: #d7e8ea;
-    background: rgba(5, 7, 10, 0.72);
-    font-size: 0.8rem;
-  }
-
-  .meta-row {
-    justify-content: space-between;
-    gap: 10px;
-    min-height: 36px;
-    border-block: 1px solid #1d2a2d;
-    color: #8ea4a7;
-    font-size: 0.84rem;
-  }
-
-  .meta-row strong {
-    color: #ffcc66;
-    font-family: "Cascadia Mono", Consolas, monospace;
-  }
-
-  .quota-grid {
+  .summary {
+    margin-top: 12px;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 2px;
+    color: #7c7569;
+    font-size: 0.78rem;
+    line-height: 1.45;
   }
 
-  .quota-cell {
-    position: relative;
-    overflow: hidden;
-    min-height: 232px;
-    display: grid;
-    align-content: space-between;
-    gap: 14px;
-    padding: 16px;
-    border: 1px solid #1d2a2d;
-    border-radius: 8px;
-    background: #071014;
-  }
-
-  .quota-cell::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 36%);
-    pointer-events: none;
-  }
-
-  .five {
-    box-shadow: inset 0 0 0 1px rgba(34, 230, 209, 0.1);
-  }
-
-  .week {
-    box-shadow: inset 0 0 0 1px rgba(155, 124, 255, 0.12);
-  }
-
-  .cell-head {
-    position: relative;
-    justify-content: space-between;
-    gap: 10px;
-  }
-
-  .cell-head span {
-    color: #f5f7fa;
+  .summary strong {
+    color: #334e68;
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
     font-weight: 700;
   }
 
-  .cell-head small {
-    color: #71888c;
-    font-family: "Cascadia Mono", Consolas, monospace;
+  .sidebar-bottom {
+    display: grid;
+    gap: 14px;
+  }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+
+  .badges span {
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0 9px;
+    color: #596777;
+    background: rgba(255, 255, 255, 0.66);
     font-size: 0.72rem;
+    box-shadow: inset 0 0 0 1px rgba(92, 103, 113, 0.1);
+  }
+
+  button {
+    min-height: 40px;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 20px;
+    color: #fffaf0;
+    background: #334e68;
+    cursor: pointer;
+    font-weight: 760;
+    box-shadow: 0 8px 18px rgba(51, 78, 104, 0.18);
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
+
+  button:focus-visible {
+    outline: 3px solid rgba(126, 163, 181, 0.44);
+    outline-offset: 3px;
+  }
+
+  .content {
+    display: grid;
+    align-content: space-between;
+    gap: 18px;
+  }
+
+  .quota-list {
+    display: grid;
+  }
+
+  .quota-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 22px;
+    min-height: 145px;
+    border-bottom: 1px solid rgba(111, 103, 88, 0.16);
+  }
+
+  .quota-line:first-child {
+    border-top: 0;
+  }
+
+  .quota-copy {
+    min-width: 0;
+  }
+
+  .line-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .line-head span {
+    color: #53606c;
+    font-size: 0.88rem;
+  }
+
+  .line-head b {
+    color: #7c7569;
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
   }
 
   .quota-value {
-    position: relative;
-    color: #22e6d1;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-size: 4.2rem;
+    color: #334e68;
+    font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-size: clamp(3.9rem, 8vw, 5.1rem);
+    font-variant-numeric: tabular-nums;
+    font-weight: 760;
     line-height: 1;
   }
 
   .week .quota-value {
-    color: #9b7cff;
+    color: #7b6651;
   }
 
   .track {
-    position: relative;
-    height: 8px;
+    height: 7px;
     overflow: hidden;
-    border-radius: 8px;
-    background: #121c20;
+    border-radius: 999px;
+    background: rgba(77, 89, 101, 0.12);
   }
 
   .track span {
@@ -286,74 +337,25 @@
     width: var(--progress);
     height: 100%;
     border-radius: inherit;
-    background: #22e6d1;
+    background: #7ea3b5;
   }
 
   .week .track span {
-    background: #9b7cff;
+    background: #c3aa84;
   }
 
-  .quota-cell p {
-    position: relative;
-    margin: 0;
-    color: #8ea4a7;
-    font-size: 0.92rem;
-  }
-
-  .quota-cell b {
-    color: #ffcc66;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-weight: 700;
-  }
-
-  .console {
-    display: grid;
-    gap: 10px;
-    padding-top: 2px;
-  }
-
-  .message {
-    min-height: 36px;
+  .status-row {
+    min-height: 24px;
     display: flex;
-    align-items: center;
-    border: 1px solid #1d2a2d;
-    border-radius: 8px;
-    padding: 0 12px;
-    color: #d7e8ea;
-    background: rgba(5, 7, 10, 0.7);
-    font-size: 0.88rem;
+    align-items: end;
+    justify-content: space-between;
+    color: #68727c;
+    font-size: 0.8rem;
   }
 
-  .message.error {
-    border-color: rgba(255, 204, 102, 0.5);
-    color: #ffcc66;
-  }
-
-  button {
-    min-height: 36px;
-    border: 1px solid #1d2a2d;
-    border-radius: 8px;
-    padding: 0 13px;
-    color: #f5f7fa;
-    background: #10181b;
-    cursor: pointer;
-  }
-
-  button.primary {
-    border-color: rgba(34, 230, 209, 0.55);
-    color: #051014;
-    background: #22e6d1;
-    font-weight: 800;
-  }
-
-  button:disabled {
-    cursor: not-allowed;
-    opacity: 0.45;
-  }
-
-  button:focus-visible {
-    outline: 2px solid #ffcc66;
-    outline-offset: 2px;
+  .status-row span.error {
+    color: #9a5c46;
+    font-weight: 650;
   }
 
   @media (max-width: 720px) {
@@ -362,22 +364,39 @@
       place-items: start center;
     }
 
-    .topbar {
-      display: grid;
-      align-items: start;
-    }
-
-    .status-cluster,
-    .actions {
-      justify-content: flex-start;
-    }
-
-    .quota-grid {
+    .window {
       grid-template-columns: 1fr;
+      gap: 22px;
+      min-height: auto;
+      padding: 22px;
+    }
+
+    .sidebar {
+      padding-right: 0;
+      padding-bottom: 20px;
+      border-right: 0;
+      border-bottom: 1px solid rgba(111, 103, 88, 0.18);
+    }
+
+    .traffic-lights {
+      margin-bottom: 18px;
+    }
+
+    .quota-line {
+      grid-template-columns: 1fr;
+      gap: 12px;
+      min-height: 142px;
+      padding-block: 18px;
+    }
+
+    .line-head {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 12px;
     }
 
     .quota-value {
-      font-size: 3.4rem;
+      font-size: 3.8rem;
     }
   }
 </style>
