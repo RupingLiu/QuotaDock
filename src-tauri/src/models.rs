@@ -26,6 +26,8 @@ pub struct Settings {
     pub stale_after_minutes: u32,
     pub notify_below_percent: Vec<u8>,
     pub clipboard_monitoring: bool,
+    #[serde(default = "default_notifications_enabled")]
+    pub notifications_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,8 +133,13 @@ impl Default for Settings {
             stale_after_minutes: 60,
             notify_below_percent: vec![20, 10],
             clipboard_monitoring: false,
+            notifications_enabled: true,
         }
     }
+}
+
+fn default_notifications_enabled() -> bool {
+    true
 }
 
 impl Default for CodexHealth {

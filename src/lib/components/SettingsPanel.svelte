@@ -12,11 +12,13 @@
   let staleAfterMinutes = settings.staleAfterMinutes;
   let notifyBelowPercent = settings.notifyBelowPercent.join(", ");
   let clipboardMonitoring = settings.clipboardMonitoring;
+  let notificationsEnabled = settings.notificationsEnabled;
 
   $: if (settings) {
     staleAfterMinutes = settings.staleAfterMinutes;
     notifyBelowPercent = settings.notifyBelowPercent.join(", ");
     clipboardMonitoring = settings.clipboardMonitoring;
+    notificationsEnabled = settings.notificationsEnabled;
   }
 
   async function save() {
@@ -24,6 +26,7 @@
       staleAfterMinutes: Math.max(1, Math.round(Number(staleAfterMinutes))),
       notifyBelowPercent: parseThresholds(notifyBelowPercent),
       clipboardMonitoring,
+      notificationsEnabled,
     });
   }
 
@@ -55,6 +58,10 @@
     <label class="toggle">
       <input bind:checked={clipboardMonitoring} type="checkbox" />
       Clipboard monitoring
+    </label>
+    <label class="toggle">
+      <input bind:checked={notificationsEnabled} type="checkbox" />
+      Notifications
     </label>
   </div>
 

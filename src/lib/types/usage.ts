@@ -17,6 +17,7 @@ export type Settings = {
   staleAfterMinutes: number;
   notifyBelowPercent: number[];
   clipboardMonitoring: boolean;
+  notificationsEnabled: boolean;
 };
 
 export type ParseWarning = {

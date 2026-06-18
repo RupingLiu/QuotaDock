@@ -6,6 +6,7 @@ const settings: Settings = {
   staleAfterMinutes: 60,
   notifyBelowPercent: [20, 10],
   clipboardMonitoring: false,
+  notificationsEnabled: true,
 };
 
 const baseSnapshot: UsageSnapshot = {

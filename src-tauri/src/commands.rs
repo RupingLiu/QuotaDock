@@ -1,10 +1,13 @@
 use crate::codex_probe::probe_codex;
 use crate::models::{AppState, ManualUpdateInput, Settings, UsageSnapshot};
+use crate::official_links::USAGE_DASHBOARD_URL;
+use crate::reminder::notify_due_reminders;
 use crate::status_parser::{parse_status_text as parse_status_text_impl, ParseClock, ParseResult};
 use crate::usage_store::{StoreError, UsageStore};
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub fn get_app_state(app: AppHandle) -> Result<AppState, String> {
@@ -26,30 +29,43 @@ pub fn refresh_codex_probe() -> crate::models::CodexHealth {
 }
 
 #[tauri::command]
+pub fn open_official_usage(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(USAGE_DASHBOARD_URL, None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn save_snapshot(app: AppHandle, snapshot: UsageSnapshot) -> Result<AppState, String> {
     let store = store_for_app(&app)?;
-    store
+    let app_state = store
         .save_snapshot(snapshot)
         .map(|outcome| outcome.into_app_state())
-        .map_err(to_command_error)
+        .map_err(to_command_error)?;
+    notify_due_reminders(&app, &app_state);
+    Ok(app_state)
 }
 
 #[tauri::command]
 pub fn update_manual_fields(app: AppHandle, input: ManualUpdateInput) -> Result<AppState, String> {
     let store = store_for_app(&app)?;
-    store
+    let app_state = store
         .update_manual_fields(input)
         .map(|outcome| outcome.into_app_state())
-        .map_err(to_command_error)
+        .map_err(to_command_error)?;
+    notify_due_reminders(&app, &app_state);
+    Ok(app_state)
 }
 
 #[tauri::command]
 pub fn update_settings(app: AppHandle, settings: Settings) -> Result<AppState, String> {
     let store = store_for_app(&app)?;
-    store
+    let app_state = store
         .update_settings(settings)
         .map(|outcome| outcome.into_app_state())
-        .map_err(to_command_error)
+        .map_err(to_command_error)?;
+    notify_due_reminders(&app, &app_state);
+    Ok(app_state)
 }
 
 #[tauri::command]

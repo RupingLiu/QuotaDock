@@ -14,6 +14,7 @@
     staleAfterMinutes: 60,
     notifyBelowPercent: [20, 10],
     clipboardMonitoring: false,
+    notificationsEnabled: true,
   };
 
   $: settings = usage.settings ?? fallbackSettings;
