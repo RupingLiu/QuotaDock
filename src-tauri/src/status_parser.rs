@@ -48,7 +48,8 @@ pub fn parse_status_text_with_source(
     let mut unknown_lines = Vec::new();
 
     for line in raw_text.lines() {
-        let trimmed = line.trim();
+        let cleaned = clean_terminal_line(line);
+        let trimmed = cleaned.trim();
         if trimmed.is_empty() || is_generic_status_header(trimmed) {
             continue;
         }
@@ -73,16 +74,20 @@ pub fn parse_status_text_with_source(
                 QuotaKind::Weekly => &mut weekly,
             };
 
-            if let Some(percent) = extract_percent(trimmed) {
-                reading.remaining_percent = Some(percent);
-                matched = true;
+            if reading.remaining_percent.is_none() {
+                if let Some(percent) = extract_percent(trimmed) {
+                    reading.remaining_percent = Some(percent);
+                    matched = true;
+                }
             }
-            if let Some(reset_at) = extract_reset_at(trimmed) {
-                reading.reset_at = Some(reset_at);
-                matched = true;
-            } else if let Some(seconds) = extract_countdown(trimmed) {
-                reading.reset_countdown_seconds = Some(seconds);
-                matched = true;
+            if reading.reset_at.is_none() && reading.reset_countdown_seconds.is_none() {
+                if let Some(reset_at) = extract_reset_at(trimmed) {
+                    reading.reset_at = Some(reset_at);
+                    matched = true;
+                } else if let Some(seconds) = extract_countdown(trimmed) {
+                    reading.reset_countdown_seconds = Some(seconds);
+                    matched = true;
+                }
             }
         }
 
@@ -128,6 +133,54 @@ pub fn parse_status_text_with_source(
             warnings,
         },
     }
+}
+
+fn clean_terminal_line(line: &str) -> String {
+    let mut output = String::new();
+    let bytes = line.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == 0x1b {
+            index += 1;
+            if index < bytes.len() && bytes[index] == b'[' {
+                index += 1;
+                while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            if index < bytes.len() && bytes[index] == b']' {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && index + 1 < bytes.len() && bytes[index + 1] == b'\\'
+                    {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+
+        let Some(character) = line[index..].chars().next() else {
+            break;
+        };
+        if !character.is_control() || character == '\t' {
+            output.push(character);
+        }
+        index += character.len_utf8();
+    }
+
+    output
 }
 
 fn detect_windows(line: &str) -> Vec<QuotaKind> {
@@ -249,7 +302,51 @@ fn extract_reset_at(line: &str) -> Option<String> {
         }
     }
 
-    value_after_colon(line).filter(|value| !value.contains('%') && !looks_like_countdown(value))
+    value_after_colon(line)
+        .filter(|value| !value.contains('%') && !looks_like_countdown(value))
+        .or_else(|| reset_phrase(line))
+}
+
+fn reset_phrase(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    for keyword in [
+        "resets",
+        "reset",
+        "updates",
+        "update",
+        "refreshes",
+        "refresh",
+    ] {
+        let Some(index) = lower.find(keyword) else {
+            continue;
+        };
+        let segment = &line[index + keyword.len()..];
+        let segment = segment
+            .split(')')
+            .next()
+            .unwrap_or(segment)
+            .trim()
+            .trim_start_matches(|character: char| {
+                character == ':' || character == '：' || character == '(' || character == ' '
+            })
+            .trim();
+        if segment.is_empty()
+            || segment.contains('%')
+            || looks_like_countdown(segment)
+            || segment.eq_ignore_ascii_case("at")
+        {
+            continue;
+        }
+        let segment = segment
+            .strip_prefix("at:")
+            .or_else(|| segment.strip_prefix("at："))
+            .unwrap_or(segment)
+            .trim();
+        if !segment.is_empty() {
+            return Some(segment.to_string());
+        }
+    }
+    None
 }
 
 fn extract_countdown(line: &str) -> Option<i64> {
@@ -480,6 +577,31 @@ mod tests {
 
         assert_eq!(result.snapshot.five_hour.remaining_percent, Some(72));
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(46));
+    }
+
+    #[test]
+    fn keeps_current_model_limits_before_spark_limits() {
+        let result = parse(
+            "5h limit: [======] 44% left (resets 22:04)\nWeekly limit: [======] 59% left (resets 07:00 on 25 Jun)\nGPT-5.3-Codex-Spark limit:\n5h limit: [======] 100% left (resets 02:51 on 19 Jun)\nWeekly limit: [======] 100% left (resets 21:51 on 25 Jun)",
+        );
+
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(44));
+        assert_eq!(result.snapshot.five_hour.reset_at.as_deref(), Some("22:04"));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(59));
+        assert_eq!(
+            result.snapshot.weekly.reset_at.as_deref(),
+            Some("07:00 on 25 Jun")
+        );
+    }
+
+    #[test]
+    fn parses_terminal_output_with_ansi_sequences() {
+        let result = parse(
+            "\u{1b}[36m5h limit:\u{1b}[0m [====] 44% left (resets 22:04)\n\u{1b}[35mWeekly limit:\u{1b}[0m [====] 59% left (resets 07:00 on 25 Jun)",
+        );
+
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(44));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(59));
     }
 
     #[test]

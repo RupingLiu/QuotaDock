@@ -22,9 +22,24 @@ if (!existsSync(tauriEntry)) {
   process.exit(1);
 }
 
+const env = { ...process.env };
+const pathKey =
+  Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+for (const candidate of [
+  "C:\\msys64\\ucrt64\\bin",
+  "C:\\msys64\\mingw64\\bin",
+  "C:\\msys64\\clang64\\bin",
+]) {
+  if (existsSync(join(candidate, "dlltool.exe"))) {
+    env[pathKey] = `${candidate};${env[pathKey] ?? ""}`;
+    break;
+  }
+}
+
 const result = spawnSync(process.execPath, [tauriEntry, ...tauriArgs], {
   stdio: "inherit",
   shell: false,
+  env,
 });
 
 if (result.error) {
