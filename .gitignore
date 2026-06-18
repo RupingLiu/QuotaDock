@@ -1,0 +1,22 @@
+.superpowers/
+outputs/
+work/
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.vite/
+
+# Tauri / Rust output
+target/
+src-tauri/target/
+
+# Local environment and editor state
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
