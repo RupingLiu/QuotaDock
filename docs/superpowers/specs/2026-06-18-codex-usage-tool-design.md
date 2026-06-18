@@ -21,6 +21,7 @@ Official references:
 - Parse user-pasted Codex `/status` output into a structured local snapshot.
 - Show when data was last updated and whether it is fresh, stale, partial, or manually entered.
 - Offer a quick path to the official Codex Usage Dashboard for verification.
+- Allow the user to enable or disable launch at Windows startup.
 - Keep the first implementation Windows-first while leaving a realistic path to macOS/Linux through Tauri.
 
 ## Non-Goals
@@ -65,6 +66,14 @@ Details should be one level deeper:
 - Manual notes.
 - History of recent snapshots.
 
+Settings should include:
+
+- Stale-data threshold.
+- Notification thresholds.
+- Notification enable/disable controls.
+- Clipboard monitoring toggle, disabled by default.
+- Launch at startup toggle, disabled by default.
+
 ## Data Sources
 
 ### Local Codex Health Probe
@@ -91,6 +100,23 @@ Expected fields include:
 - Source timestamp from the local machine when parsed.
 
 Because the exact `/status` format may change, parsing must be resilient and conservative. Unknown lines should not fail the whole parse.
+
+### Parser Fixture Requirements
+
+The first parser implementation needs real, sanitized fixture samples before it can be considered reliable. Fixtures should live under `tests/fixtures/status/` once the app scaffold exists.
+
+Required fixture classes:
+
+- A complete `/status` output that includes model, rate limits, remaining usage, reset timing, and context details.
+- A partial `/status` output that lacks at least one important usage field.
+- A status output from an unavailable or unusual state, such as not signed in, API-key mode, or no rate-limit details shown.
+- A manually created future-format sample with extra unrelated lines and changed ordering.
+
+Fixture hygiene:
+
+- Remove tokens, account identifiers, private paths, and personal email addresses before committing samples.
+- Keep realistic wording and spacing so parser tests exercise the real shape of the output.
+- Store the expected parsed result next to each fixture as JSON.
 
 ### Manual Entry
 
@@ -124,7 +150,8 @@ Suggested shape:
   "settings": {
     "staleAfterMinutes": 60,
     "notifyBelowPercent": [20, 10],
-    "clipboardMonitoring": false
+    "clipboardMonitoring": false,
+    "launchAtStartup": false
   },
   "latestSnapshot": {
     "id": "2026-06-18T04:55:00Z",
@@ -144,6 +171,25 @@ Suggested shape:
 ```
 
 The app should tolerate a missing or corrupt storage file by starting in an unavailable state and offering to create a new state file. It should not crash or silently discard data.
+
+## Storage Location and Backup
+
+MVP state should be stored in the user app-data directory, not beside the executable and not in the project workspace.
+
+Default Windows layout:
+
+- State file: `%APPDATA%\QuotaDock\state.json`
+- Backups: `%APPDATA%\QuotaDock\backups\`
+- Logs: `%APPDATA%\QuotaDock\logs\`
+
+When `state.json` is corrupt or cannot be parsed, QuotaDock should:
+
+1. Move the unreadable file to `backups/state-corrupt-<timestamp>.json`.
+2. Start with an unavailable snapshot state.
+3. Show a clear recovery message.
+4. Allow the user to paste `/status` or manually enter values to create a fresh state file.
+
+The app should keep at most 10 automatic corrupt-state backups by default.
 
 ## Core Modules
 
@@ -192,6 +238,21 @@ Responsibilities:
 - Refresh local Codex checks.
 - Quit the app.
 
+### StartupController
+
+Responsibilities:
+
+- Read whether QuotaDock is registered to launch at Windows startup.
+- Enable startup launch only after the user explicitly turns it on.
+- Disable startup launch when the user turns it off.
+- Detect and report registration failures.
+- Avoid requiring administrator privileges.
+
+Non-responsibilities:
+
+- Do not silently enable startup during install or first launch.
+- Do not keep stale startup entries if the executable path changes and the app can safely repair or remove them.
+
 ### ReminderEngine
 
 Responsibilities:
@@ -200,6 +261,15 @@ Responsibilities:
 - Notify when the snapshot becomes stale.
 - Avoid repeated notification spam.
 - Avoid low-usage warnings when data is stale or unavailable.
+
+Default notification behavior:
+
+- Below 20%: notify once per snapshot.
+- Below 10%: notify once per snapshot, even if the 20% notification already fired.
+- Stale snapshot: notify once when the snapshot crosses the configured stale threshold.
+- Reset timing: if a reset time is known, optionally notify once within 10 minutes after reset so the user can refresh status.
+- Cooldown: never send the same notification type more than once per hour unless a new snapshot is parsed.
+- User control: all notification classes must be individually disableable.
 
 ### OfficialLinks
 
@@ -238,6 +308,14 @@ Responsibilities:
 2. App opens the Codex Usage Dashboard in the default browser.
 3. User can compare the official page with the local snapshot.
 
+### Launch at Startup Setup
+
+1. User opens Settings.
+2. User turns on "Launch at startup".
+3. App registers QuotaDock with the current user's startup entries.
+4. App shows whether registration succeeded.
+5. User can return to Settings and turn the option off.
+
 ## UI States
 
 - Unconfigured: no snapshot exists.
@@ -247,6 +325,7 @@ Responsibilities:
 - Stale: snapshot age exceeds the configured threshold.
 - Local Codex unavailable: `codex` is not installed, not on PATH, or not authenticated.
 - Parse failed: pasted text could not be understood.
+- Startup registration unavailable: the app cannot read or write the current user's startup setting.
 
 The UI must make these states visible. It should avoid presenting stale or partial values as exact current truth.
 
@@ -258,6 +337,7 @@ The UI must make these states visible. It should avoid presenting stale or parti
 - Parse failure: preserve raw text, show warning, and offer manual entry.
 - Corrupt local JSON: offer backup-and-reset behavior.
 - Notification failure: log locally and keep the app usable.
+- Startup registration failure: keep the toggle off, show a clear error, and do not retry repeatedly in the background.
 
 ## Security and Privacy
 
@@ -265,6 +345,7 @@ The UI must make these states visible. It should avoid presenting stale or parti
 - Do not read Codex auth token files directly.
 - Do not upload pasted `/status` text.
 - Keep clipboard monitoring off by default.
+- Keep launch at startup off by default.
 - Redact command diagnostics before showing or saving them if they contain paths or account identifiers that are not needed.
 - Label the app as an unofficial personal utility, not an OpenAI product.
 
@@ -288,6 +369,39 @@ Manual verification on Windows:
 - Paste flow updates dashboard.
 - Official Usage Dashboard link opens.
 - Notifications can be enabled and disabled.
+- Launch at startup can be enabled and disabled without administrator privileges.
+
+## Windows Packaging
+
+The first packaged build should optimize for quick personal use on Windows:
+
+- Primary deliverable: portable `.exe` build for local use.
+- Secondary deliverable: installer package after the tray, storage, and notification flows are stable.
+- The portable build should create app-data directories on first launch.
+- The app should not require administrator privileges.
+- Startup registration should be per-user and should not require administrator privileges.
+- If the portable executable is moved after startup registration, the app should detect the mismatch on next launch and ask the user to re-enable startup.
+- The package should include version metadata and the QuotaDock product name.
+- Code signing is optional for early private builds and should be revisited before public distribution.
+
+## Acceptance Criteria
+
+MVP is complete when all of the following are true:
+
+- The app launches on Windows and shows a compact main window.
+- The tray icon appears and can reopen the main window after it is closed or hidden.
+- The app can run `codex --version`, `codex login status`, and `codex doctor --json`, then show a redacted health summary.
+- The user can paste a `/status` sample and get a saved usage snapshot.
+- The main window shows remaining percentage, reset timing, last updated time, and confidence state when those fields are known.
+- Missing fields are shown as unknown instead of guessed.
+- The user can manually enter or correct remaining percentage, reset time, credits balance, and notes.
+- State persists across app restarts in `%APPDATA%\QuotaDock\state.json`.
+- Corrupt local state is backed up and recovered without crashing.
+- Low-usage and stale-data notifications respect the default cooldown rules.
+- The user can enable and disable launch at startup from Settings.
+- The official Usage Dashboard opens from both the main window and tray menu.
+- Parser, storage, probe, and UI-state tests pass.
+- A portable Windows build can be produced from a clean checkout.
 
 ## Milestones
 
