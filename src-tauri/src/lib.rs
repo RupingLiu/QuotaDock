@@ -1,12 +1,15 @@
 #![cfg_attr(test, allow(dead_code))]
 
-mod models;
-mod status_parser;
 #[cfg(feature = "desktop")]
 mod floating_bar;
+mod models;
+mod startup;
+mod status_parser;
 #[cfg(feature = "desktop")]
 mod tray;
+mod updates;
 mod usage_store;
+mod version;
 
 #[cfg(not(test))]
 mod commands;
@@ -23,6 +26,7 @@ pub fn run() {
         }
         floating_bar::position_main_window(app.handle());
         commands::prewarm_codex_status_session();
+        updates::check_on_startup(app.handle().clone());
         Ok(())
     });
 
