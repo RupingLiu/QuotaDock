@@ -22,6 +22,7 @@ Official references:
 - Show when data was last updated and whether it is fresh, stale, partial, or manually entered.
 - Offer a quick path to the official Codex Usage Dashboard for verification.
 - Allow the user to enable or disable launch at Windows startup.
+- Check GitHub Releases for newer QuotaDock builds, download signed update packages, and prompt the user before installation.
 - Keep the first implementation Windows-first while leaving a realistic path to macOS/Linux through Tauri.
 
 ## Non-Goals
@@ -73,6 +74,7 @@ Settings should include:
 - Notification enable/disable controls.
 - Clipboard monitoring toggle, disabled by default.
 - Launch at startup toggle, disabled by default.
+- Automatic update checks, enabled by default with user confirmation before installation.
 
 ## Data Sources
 
@@ -151,7 +153,14 @@ Suggested shape:
     "staleAfterMinutes": 60,
     "notifyBelowPercent": [20, 10],
     "clipboardMonitoring": false,
-    "launchAtStartup": false
+    "launchAtStartup": false,
+    "checkUpdatesOnStartup": true,
+    "includePrereleaseUpdates": false
+  },
+  "lastUpdateCheck": {
+    "checkedAt": null,
+    "availableVersion": null,
+    "status": "not-checked"
   },
   "latestSnapshot": {
     "id": "2026-06-18T04:55:00Z",
@@ -253,6 +262,33 @@ Non-responsibilities:
 - Do not silently enable startup during install or first launch.
 - Do not keep stale startup entries if the executable path changes and the app can safely repair or remove them.
 
+### UpdateController
+
+Responsibilities:
+
+- Check the configured GitHub Releases updater endpoint for a newer QuotaDock version.
+- Show available version, release notes, publication date, and download size when available.
+- Download the signed update package only after the user accepts the update prompt.
+- Show download progress and allow cancellation before installation begins.
+- Install the update through the Tauri updater flow and prompt for app restart or relaunch when required.
+- Keep a manual "Check for updates" action in Settings and the tray menu.
+- Respect user settings for automatic checks on startup and prerelease inclusion.
+
+Non-responsibilities:
+
+- Do not auto-install updates silently.
+- Do not execute unsigned or signature-mismatched packages.
+- Do not update from arbitrary URLs supplied at runtime.
+- Do not treat GitHub source-code archives as update packages.
+
+GitHub Release requirements:
+
+- Each release intended for updates must include Tauri updater artifacts generated with `bundle.createUpdaterArtifacts`.
+- Windows releases must include an installer artifact such as NSIS `.exe` or MSI plus its matching `.sig` file.
+- The release must include an updater JSON file, for example `latest.json`, published at a stable URL such as `https://github.com/RupingLiu/QuotaDock/releases/latest/download/latest.json`.
+- The updater JSON must include a SemVer version and signed platform package URL/signature data.
+- QuotaDock must embed the updater public key in `tauri.conf.json`; private signing keys must never be committed.
+
 ### ReminderEngine
 
 Responsibilities:
@@ -316,6 +352,17 @@ Responsibilities:
 4. App shows whether registration succeeded.
 5. User can return to Settings and turn the option off.
 
+### Update Check and Install
+
+1. User clicks "Check for updates" or the app performs a startup check when enabled.
+2. App fetches the GitHub Releases updater metadata.
+3. If no newer signed version exists, app shows "QuotaDock is up to date".
+4. If a newer version exists, app shows version, notes, and install prompt.
+5. User chooses "Download and install".
+6. App downloads the update package and shows progress.
+7. App verifies the update signature through the Tauri updater.
+8. App installs the update and prompts the user to restart/relaunch QuotaDock when required.
+
 ## UI States
 
 - Unconfigured: no snapshot exists.
@@ -326,6 +373,10 @@ Responsibilities:
 - Local Codex unavailable: `codex` is not installed, not on PATH, or not authenticated.
 - Parse failed: pasted text could not be understood.
 - Startup registration unavailable: the app cannot read or write the current user's startup setting.
+- Update available: a newer signed release is available.
+- Update check failed: app could not reach the release metadata endpoint or received invalid metadata.
+- Update download failed: download was interrupted or cancelled.
+- Update install failed: signature verification or installation failed.
 
 The UI must make these states visible. It should avoid presenting stale or partial values as exact current truth.
 
@@ -338,6 +389,9 @@ The UI must make these states visible. It should avoid presenting stale or parti
 - Corrupt local JSON: offer backup-and-reset behavior.
 - Notification failure: log locally and keep the app usable.
 - Startup registration failure: keep the toggle off, show a clear error, and do not retry repeatedly in the background.
+- Update check failure: show the error and leave the current version running.
+- Update signature failure: reject the update package, show a security warning, and do not install it.
+- Update install failure: keep the current version running and show a retry option.
 
 ## Security and Privacy
 
@@ -346,6 +400,9 @@ The UI must make these states visible. It should avoid presenting stale or parti
 - Do not upload pasted `/status` text.
 - Keep clipboard monitoring off by default.
 - Keep launch at startup off by default.
+- Verify updates using Tauri updater signatures before installation.
+- Keep updater signing private keys outside the repository and GitHub release assets.
+- Only use the configured GitHub Releases updater endpoint for automatic updates.
 - Redact command diagnostics before showing or saving them if they contain paths or account identifiers that are not needed.
 - Label the app as an unofficial personal utility, not an OpenAI product.
 
@@ -370,18 +427,23 @@ Manual verification on Windows:
 - Official Usage Dashboard link opens.
 - Notifications can be enabled and disabled.
 - Launch at startup can be enabled and disabled without administrator privileges.
+- Manual update check reports up-to-date, update available, or failure states.
+- A signed test release can be downloaded and installed through the updater flow.
 
 ## Windows Packaging
 
 The first packaged build should optimize for quick personal use on Windows:
 
 - Primary deliverable: portable `.exe` build for local use.
-- Secondary deliverable: installer package after the tray, storage, and notification flows are stable.
+- Update-capable deliverable: signed NSIS `.exe` installer or MSI bundle generated by Tauri.
+- Optional deliverable: portable `.exe` for manual local testing, with clear labeling that automatic update installation targets the signed installer/update artifact.
 - The portable build should create app-data directories on first launch.
 - The app should not require administrator privileges.
 - Startup registration should be per-user and should not require administrator privileges.
 - If the portable executable is moved after startup registration, the app should detect the mismatch on next launch and ask the user to re-enable startup.
 - The package should include version metadata and the QuotaDock product name.
+- Release packaging should generate updater artifacts and signatures.
+- GitHub Releases should include installer/update artifacts, `.sig` files, release notes, and updater JSON.
 - Code signing is optional for early private builds and should be revisited before public distribution.
 
 ## Acceptance Criteria
@@ -399,9 +461,12 @@ MVP is complete when all of the following are true:
 - Corrupt local state is backed up and recovered without crashing.
 - Low-usage and stale-data notifications respect the default cooldown rules.
 - The user can enable and disable launch at startup from Settings.
+- The user can manually check for updates from Settings and the tray menu.
+- When a newer signed GitHub Release exists, the app prompts the user, downloads the update, verifies it, installs it, and prompts for restart/relaunch.
+- Unsigned, malformed, or signature-mismatched update metadata/packages are rejected.
 - The official Usage Dashboard opens from both the main window and tray menu.
 - Parser, storage, probe, and UI-state tests pass.
-- A portable Windows build can be produced from a clean checkout.
+- A Windows installer/update-capable build can be produced from a clean checkout.
 
 ## Milestones
 
@@ -413,7 +478,9 @@ MVP is complete when all of the following are true:
 6. Paste/manual update flow.
 7. Tray menu.
 8. Notification thresholds.
-9. Windows packaging.
+9. Launch at startup setting.
+10. Windows packaging.
+11. GitHub Release updater flow.
 
 ## MVP Defaults
 
@@ -422,4 +489,4 @@ MVP is complete when all of the following are true:
 - Icon: simple gauge/dock mark, created during the implementation phase.
 - Clipboard monitoring: deferred until after paste/manual parsing works.
 - History retention: keep the latest 100 snapshots by default.
-- Automatic updates: deferred until after the first local Windows package is usable.
+- Automatic updates: included for release builds through signed GitHub Releases; startup checks are enabled by default, installation always requires user confirmation.
