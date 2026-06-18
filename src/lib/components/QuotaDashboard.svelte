@@ -35,6 +35,7 @@
   $: weekly = snapshot?.weekly ?? emptyReading;
   $: statusText =
     errorMessage ??
+    (refreshing ? "正在后台读取 Codex /status，窗口可继续操作..." : null) ??
     noticeMessage ??
     appState?.statusMessage ??
     "尚未获取额度。请点击自动查询或粘贴 /status。";

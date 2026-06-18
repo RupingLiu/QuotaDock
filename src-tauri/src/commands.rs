@@ -44,7 +44,16 @@ pub fn clear_snapshot(app: AppHandle) -> Result<AppState, String> {
 }
 
 #[tauri::command]
-pub fn refresh_usage(app: AppHandle) -> Result<RefreshUsageResult, String> {
+pub async fn refresh_usage(app: AppHandle) -> Result<RefreshUsageResult, String> {
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || refresh_usage_blocking(worker_app))
+        .await
+        .map_err(|error| format!("后台查询任务失败：{error}"))??;
+    sync_tray(&app, &result.app_state);
+    Ok(result)
+}
+
+fn refresh_usage_blocking(app: AppHandle) -> Result<RefreshUsageResult, String> {
     let store = store_for_app(&app)?;
     match fetch_usage_from_codex_cli() {
         Ok(snapshot) => {
@@ -52,7 +61,6 @@ pub fn refresh_usage(app: AppHandle) -> Result<RefreshUsageResult, String> {
                 .save_snapshot(snapshot)
                 .map(|outcome| outcome.into_app_state())
                 .map_err(to_command_error)?;
-            sync_tray(&app, &app_state);
             Ok(RefreshUsageResult {
                 app_state,
                 updated: true,
@@ -61,7 +69,6 @@ pub fn refresh_usage(app: AppHandle) -> Result<RefreshUsageResult, String> {
         }
         Err(message) => {
             let app_state = load_app_state(&app)?;
-            sync_tray(&app, &app_state);
             Ok(RefreshUsageResult {
                 app_state,
                 updated: false,
@@ -105,7 +112,7 @@ fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
         }
         output.stdout
     } else {
-        run_codex_status_pty(Duration::from_secs(20))?
+        run_codex_status_pty(Duration::from_secs(75))?
     };
 
     let mut result =
@@ -341,9 +348,12 @@ mod windows_conpty {
     fn command_line(target: &Path) -> Vec<u16> {
         let target = target.to_string_lossy();
         let command = if is_cmd_shim(Path::new(target.as_ref())) {
-            format!("cmd.exe /D /C {} --no-alt-screen", quote_arg(&target))
+            format!(
+                "cmd.exe /D /C {} -c mcp_servers={{}} --no-alt-screen",
+                quote_arg(&target)
+            )
         } else {
-            format!("{} --no-alt-screen", quote_arg(&target))
+            format!("{} -c mcp_servers={{}} --no-alt-screen", quote_arg(&target))
         };
         wide_null(&command)
     }
@@ -550,7 +560,7 @@ fn should_send_status_command(
     last_sent: Instant,
     sent_count: u8,
 ) -> bool {
-    if sent_count >= 3 {
+    if sent_count >= 8 {
         return false;
     }
     if sent_count == 0 {
@@ -649,18 +659,19 @@ fn find_codex_binary() -> Option<PathBuf> {
 fn codex_candidate_paths() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            push_codex_names(&mut candidates, &dir);
-        }
-    }
-
     for variable in ["APPDATA", "USERPROFILE", "LOCALAPPDATA"] {
         if let Some(value) = std::env::var_os(variable) {
             let base = PathBuf::from(value);
             match variable {
-                "APPDATA" => push_codex_names(&mut candidates, &base.join("npm")),
+                "APPDATA" => {
+                    push_npm_managed_codex(&mut candidates, &base.join("npm"));
+                    push_codex_names(&mut candidates, &base.join("npm"));
+                }
                 "USERPROFILE" => {
+                    push_npm_managed_codex(
+                        &mut candidates,
+                        &base.join("AppData").join("Roaming").join("npm"),
+                    );
                     push_codex_names(
                         &mut candidates,
                         &base.join("AppData").join("Roaming").join("npm"),
@@ -682,7 +693,29 @@ fn codex_candidate_paths() -> Vec<PathBuf> {
         }
     }
 
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            push_codex_names(&mut candidates, &dir);
+        }
+    }
+
     candidates
+}
+
+fn push_npm_managed_codex(candidates: &mut Vec<PathBuf>, npm_dir: &Path) {
+    candidates.push(
+        npm_dir
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex-win32-x64")
+            .join("vendor")
+            .join("x86_64-pc-windows-msvc")
+            .join("bin")
+            .join("codex.exe"),
+    );
 }
 
 fn push_codex_names(candidates: &mut Vec<PathBuf>, dir: &Path) {
