@@ -45,12 +45,6 @@
   <section class="window" aria-label="QuotaDock 额度监控">
     <aside class="sidebar">
       <div>
-        <div class="traffic-lights" aria-hidden="true">
-          <span class="close"></span>
-          <span class="minimize"></span>
-          <span class="zoom"></span>
-        </div>
-
         <p class="eyebrow">QuotaDock</p>
         <h1>Codex 额度</h1>
         <p class="summary">
@@ -111,17 +105,27 @@
 </main>
 
 <style>
+  :global(html) {
+    min-width: 320px;
+    height: 100%;
+    overflow: hidden;
+    background: #f6f4ef;
+  }
+
   :global(body) {
     margin: 0;
     min-width: 320px;
-    min-height: 100vh;
+    height: 100%;
+    overflow: hidden;
     color: #16212c;
-    background:
-      radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.74), transparent 28%),
-      linear-gradient(180deg, #eef2f6 0%, #e5e9ee 100%);
+    background: #f6f4ef;
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
       "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  }
+
+  :global(body > div) {
+    height: 100%;
   }
 
   :global(button) {
@@ -130,25 +134,24 @@
   }
 
   .shell {
-    min-height: 100vh;
-    display: grid;
-    place-items: center;
-    padding: 20px;
+    height: 100vh;
+    min-height: 420px;
+    overflow: hidden;
+    background: #f6f4ef;
   }
 
   .window {
-    width: min(880px, 100%);
-    min-height: 430px;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
     display: grid;
-    grid-template-columns: 210px minmax(0, 1fr);
-    gap: 24px;
-    padding: 28px;
-    border: 1px solid rgba(111, 103, 88, 0.18);
-    border-radius: 22px;
+    grid-template-columns: clamp(218px, 24vw, 292px) minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
     background: #f6f4ef;
-    box-shadow:
-      0 24px 64px rgba(51, 64, 78, 0.16),
-      inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    box-shadow: none;
   }
 
   .sidebar {
@@ -156,32 +159,12 @@
     flex-direction: column;
     justify-content: space-between;
     gap: 24px;
-    padding-right: 22px;
+    min-width: 0;
+    padding: 34px 28px 30px;
     border-right: 1px solid rgba(111, 103, 88, 0.18);
-  }
-
-  .traffic-lights {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 24px;
-  }
-
-  .traffic-lights span {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-  }
-
-  .close {
-    background: #ff5f57;
-  }
-
-  .minimize {
-    background: #febc2e;
-  }
-
-  .zoom {
-    background: #28c840;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent 58%),
+      #f1eee7;
   }
 
   .eyebrow,
@@ -265,21 +248,28 @@
   }
 
   .content {
-    display: grid;
-    align-content: space-between;
-    gap: 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 26px;
+    min-width: 0;
+    min-height: 0;
+    padding: clamp(28px, 5vw, 62px) clamp(32px, 6vw, 72px) 34px;
   }
 
   .quota-list {
     display: grid;
+    width: min(1080px, 100%);
+    min-height: 0;
   }
 
   .quota-line {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(180px, 1fr) auto;
     align-items: center;
-    gap: 22px;
-    min-height: 145px;
+    gap: clamp(22px, 4vw, 54px);
+    min-height: 190px;
+    padding-block: 28px;
     border-bottom: 1px solid rgba(111, 103, 88, 0.16);
   }
 
@@ -315,7 +305,7 @@
   .quota-value {
     color: #334e68;
     font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
-    font-size: clamp(3.9rem, 8vw, 5.1rem);
+    font-size: clamp(4.2rem, 9vw, 6.8rem);
     font-variant-numeric: tabular-nums;
     font-weight: 760;
     line-height: 1;
@@ -345,9 +335,10 @@
   }
 
   .status-row {
-    min-height: 24px;
+    width: min(1080px, 100%);
+    min-height: 28px;
     display: flex;
-    align-items: end;
+    align-items: center;
     justify-content: space-between;
     color: #68727c;
     font-size: 0.8rem;
@@ -359,27 +350,31 @@
   }
 
   @media (max-width: 720px) {
+    :global(html),
+    :global(body) {
+      overflow: auto;
+    }
+
     .shell {
-      padding: 12px;
-      place-items: start center;
+      height: auto;
+      min-height: 100vh;
+      overflow: visible;
     }
 
     .window {
       grid-template-columns: 1fr;
       gap: 22px;
-      min-height: auto;
-      padding: 22px;
+      min-height: 100vh;
     }
 
     .sidebar {
-      padding-right: 0;
-      padding-bottom: 20px;
+      padding: 22px;
       border-right: 0;
       border-bottom: 1px solid rgba(111, 103, 88, 0.18);
     }
 
-    .traffic-lights {
-      margin-bottom: 18px;
+    .content {
+      padding: 0 22px 24px;
     }
 
     .quota-line {
