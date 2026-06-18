@@ -1,5 +1,0 @@
-Model: gpt-5.5
-Usage used: 82%
-Quota consumed: 90%
-Reset at: unavailable
-Credits expire in 7 days

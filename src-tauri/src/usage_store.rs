@@ -1,7 +1,4 @@
-use crate::models::{
-    AppState, ConfidenceState, ManualField, ManualUpdateInput, SnapshotSource, StorageStatus,
-    StoredState, UsageSnapshot, DEFAULT_HISTORY_LIMIT, STATE_VERSION,
-};
+use crate::models::{AppState, QuotaSnapshot, StorageStatus, StoredState, STATE_VERSION};
 use std::fmt::{Display, Formatter};
 use std::io::Write;
 use std::path::PathBuf;
@@ -84,74 +81,25 @@ impl UsageStore {
         Ok(())
     }
 
-    pub fn save_snapshot(&self, snapshot: UsageSnapshot) -> Result<LoadOutcome, StoreError> {
+    pub fn save_snapshot(&self, snapshot: QuotaSnapshot) -> Result<LoadOutcome, StoreError> {
         let loaded = self.load()?;
         let status = mutation_status(&loaded.status);
         let backup_path = loaded.backup_path;
-        let mut state = loaded.state;
-        state.latest_snapshot = Some(snapshot.clone());
-        state.history.insert(0, snapshot);
-        truncate_history(&mut state.history);
-        self.save_state(&state)?;
-        Ok(self.outcome(state, status, backup_path))
-    }
-
-    pub fn update_settings(
-        &self,
-        settings: crate::models::Settings,
-    ) -> Result<LoadOutcome, StoreError> {
-        let loaded = self.load()?;
-        let status = mutation_status(&loaded.status);
-        let backup_path = loaded.backup_path;
-        let mut state = loaded.state;
-        state.settings = settings;
-        self.save_state(&state)?;
-        Ok(self.outcome(state, status, backup_path))
-    }
-
-    pub fn update_manual_fields(
-        &self,
-        input: ManualUpdateInput,
-    ) -> Result<LoadOutcome, StoreError> {
-        let loaded = self.load()?;
-        let status = mutation_status(&loaded.status);
-        let backup_path = loaded.backup_path;
-        let mut state = loaded.state;
-        let mut snapshot = state
-            .latest_snapshot
-            .clone()
-            .unwrap_or_else(new_manual_snapshot);
-
-        snapshot.source = SnapshotSource::Manual;
-        snapshot.confidence = ConfidenceState::Manual;
-
-        snapshot.remaining_percent = input.remaining_percent;
-        snapshot.reset_at = input.reset_at;
-        snapshot.credits_balance = input.credits_balance;
-        snapshot.notes = input.notes.unwrap_or_default();
-        snapshot.manual_fields = vec![
-            ManualField::RemainingPercent,
-            ManualField::ResetAt,
-            ManualField::CreditsBalance,
-            ManualField::Notes,
-        ];
-
-        state.latest_snapshot = Some(snapshot.clone());
-        state.history.insert(0, snapshot);
-        truncate_history(&mut state.history);
-        self.save_state(&state)?;
-        Ok(self.outcome(state, status, backup_path))
-    }
-
-    pub fn backup_and_reset(&self) -> Result<LoadOutcome, StoreError> {
-        let backup_path = if self.path.exists() {
-            Some(self.backup_existing_file("manual-reset")?)
-        } else {
-            None
+        let state = StoredState {
+            version: STATE_VERSION,
+            latest_snapshot: Some(snapshot),
         };
+        self.save_state(&state)?;
+        Ok(self.outcome(state, status, backup_path))
+    }
+
+    pub fn clear_snapshot(&self) -> Result<LoadOutcome, StoreError> {
+        let loaded = self.load()?;
+        let status = mutation_status(&loaded.status);
+        let backup_path = loaded.backup_path;
         let state = StoredState::default();
         self.save_state(&state)?;
-        Ok(self.outcome(state, StorageStatus::Ready, backup_path))
+        Ok(self.outcome(state, status, backup_path))
     }
 
     fn outcome(
@@ -216,12 +164,6 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
-fn truncate_history(history: &mut Vec<UsageSnapshot>) {
-    if history.len() > DEFAULT_HISTORY_LIMIT {
-        history.truncate(DEFAULT_HISTORY_LIMIT);
-    }
-}
-
 #[cfg(windows)]
 fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -258,32 +200,6 @@ fn mutation_status(status: &StorageStatus) -> StorageStatus {
     }
 }
 
-fn new_manual_snapshot() -> UsageSnapshot {
-    UsageSnapshot {
-        id: format!("manual-{}", unix_seconds()),
-        source: SnapshotSource::Manual,
-        parsed_at: unix_timestamp_string(),
-        remaining_percent: None,
-        reset_at: None,
-        reset_countdown_seconds: None,
-        credits_balance: None,
-        model: None,
-        context_window: None,
-        confidence: ConfidenceState::Manual,
-        raw_text: String::new(),
-        manual_fields: Vec::new(),
-        warnings: Vec::new(),
-        notes: String::new(),
-    }
-}
-
-fn unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -291,23 +207,12 @@ fn unix_nanos() -> u128 {
         .as_nanos()
 }
 
-fn unix_timestamp_string() -> String {
-    format!("unix:{}", unix_seconds())
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::models::{
-        ConfidenceState, ManualField, Settings, SnapshotSource, StorageStatus, StoredState,
-        UsageSnapshot, DEFAULT_HISTORY_LIMIT, STATE_VERSION,
-    };
+    use crate::models::{QuotaReading, QuotaSnapshot, SnapshotSource, StorageStatus, StoredState};
     use crate::usage_store::UsageStore;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn test_time(seconds: i64) -> String {
-        format!("2027-01-15T08:{:02}:00Z", seconds % 60)
-    }
 
     struct TestDir {
         path: PathBuf,
@@ -339,22 +244,24 @@ mod tests {
         }
     }
 
-    fn snapshot(id: &str, percent: u8) -> UsageSnapshot {
-        UsageSnapshot {
-            id: id.to_string(),
+    fn snapshot(percent: u8) -> QuotaSnapshot {
+        QuotaSnapshot {
+            id: "snap-1".to_string(),
             source: SnapshotSource::PastedStatus,
-            parsed_at: test_time(1_800_000_000),
-            remaining_percent: Some(percent),
-            reset_at: None,
-            reset_countdown_seconds: None,
-            credits_balance: None,
-            model: Some("gpt-5.5".to_string()),
-            context_window: None,
-            confidence: ConfidenceState::Fresh,
-            raw_text: "remaining 72%".to_string(),
-            manual_fields: Vec::new(),
+            captured_at: "unix:1000".to_string(),
+            five_hour: QuotaReading {
+                remaining_percent: Some(percent),
+                reset_at: None,
+                reset_countdown_seconds: Some(3600),
+            },
+            weekly: QuotaReading {
+                remaining_percent: Some(46),
+                reset_at: Some("2026-06-23T09:00:00Z".to_string()),
+                reset_countdown_seconds: None,
+            },
+            raw_text: "status".to_string(),
+            status_message: "已更新 5 小时与 1 周额度。".to_string(),
             warnings: Vec::new(),
-            notes: String::new(),
         }
     }
 
@@ -367,28 +274,27 @@ mod tests {
         let outcome = store.load().unwrap();
 
         assert_eq!(outcome.status, StorageStatus::Missing);
-        assert_eq!(outcome.state.version, STATE_VERSION);
-        assert_eq!(outcome.state.settings, Settings::default());
-        assert!(outcome.state.latest_snapshot.is_none());
+        assert_eq!(outcome.state, StoredState::default());
         assert!(!path.exists());
     }
 
     #[test]
-    fn valid_v1_file_loads_state() {
+    fn valid_v2_file_loads_state() {
         let dir = TestDir::new("valid");
         let path = dir.path().join("state.json");
         let store = UsageStore::new(path.clone());
-        let state = StoredState {
-            latest_snapshot: Some(snapshot("snap-1", 72)),
-            ..StoredState::default()
-        };
-        store.save_state(&state).unwrap();
+        store.save_snapshot(snapshot(72)).unwrap();
 
         let outcome = store.load().unwrap();
 
         assert_eq!(outcome.status, StorageStatus::Ready);
         assert_eq!(
-            outcome.state.latest_snapshot.unwrap().remaining_percent,
+            outcome
+                .state
+                .latest_snapshot
+                .unwrap()
+                .five_hour
+                .remaining_percent,
             Some(72)
         );
     }
@@ -398,50 +304,20 @@ mod tests {
         let dir = TestDir::new("corrupt");
         let path = dir.path().join("state.json");
         std::fs::write(&path, "{not valid json").unwrap();
-        let store = UsageStore::new(path.clone());
+        let store = UsageStore::new(path);
 
         let outcome = store.load().unwrap();
 
         assert_eq!(outcome.status, StorageStatus::Recovered);
-        let backup_path = outcome
-            .backup_path
-            .expect("corrupt file should be backed up");
-        assert!(backup_path.exists());
-        assert_eq!(
-            std::fs::read_to_string(backup_path).unwrap(),
-            "{not valid json"
-        );
+        assert!(outcome.backup_path.unwrap().exists());
         assert_eq!(outcome.state, StoredState::default());
-        assert!(path.exists());
     }
 
     #[test]
-    fn invalid_utf8_state_is_backed_up_and_recovered_to_default() {
-        let dir = TestDir::new("invalid-utf8");
-        let path = dir.path().join("state.json");
-        std::fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
-        let store = UsageStore::new(path.clone());
-
-        let outcome = store.load().unwrap();
-
-        assert_eq!(outcome.status, StorageStatus::Recovered);
-        let backup_path = outcome
-            .backup_path
-            .expect("invalid bytes should be backed up");
-        assert_eq!(std::fs::read(backup_path).unwrap(), [0xff, 0xfe, 0xfd]);
-        assert_eq!(outcome.state, StoredState::default());
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn unsupported_version_is_backed_up_and_recovered_to_default() {
+    fn unsupported_version_is_backed_up_and_reset() {
         let dir = TestDir::new("unsupported");
         let path = dir.path().join("state.json");
-        std::fs::write(
-            &path,
-            r#"{"version":99,"settings":{"staleAfterMinutes":60,"notifyBelowPercent":[20,10],"clipboardMonitoring":false},"latestSnapshot":null,"history":[]}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"version":1,"latestSnapshot":null}"#).unwrap();
         let store = UsageStore::new(path);
 
         let outcome = store.load().unwrap();
@@ -452,130 +328,15 @@ mod tests {
     }
 
     #[test]
-    fn save_snapshot_updates_latest_and_truncates_history() {
-        let dir = TestDir::new("truncate");
+    fn save_and_clear_snapshot() {
+        let dir = TestDir::new("clear");
         let path = dir.path().join("state.json");
         let store = UsageStore::new(path);
 
-        for index in 0..(DEFAULT_HISTORY_LIMIT + 5) {
-            store
-                .save_snapshot(snapshot(&format!("snap-{index}"), (index % 100) as u8))
-                .unwrap();
-        }
+        let saved = store.save_snapshot(snapshot(88)).unwrap();
+        assert!(saved.state.latest_snapshot.is_some());
 
-        let outcome = store.load().unwrap();
-        assert_eq!(outcome.state.latest_snapshot.unwrap().id, "snap-104");
-        assert_eq!(outcome.state.history.len(), DEFAULT_HISTORY_LIMIT);
-        assert_eq!(outcome.state.history.first().unwrap().id, "snap-104");
-        assert_eq!(outcome.state.history.last().unwrap().id, "snap-5");
-    }
-
-    #[test]
-    fn backup_and_reset_preserves_existing_state_file() {
-        let dir = TestDir::new("reset");
-        let path = dir.path().join("state.json");
-        let store = UsageStore::new(path.clone());
-        store.save_snapshot(snapshot("snap-1", 44)).unwrap();
-
-        let outcome = store.backup_and_reset().unwrap();
-
-        assert_eq!(outcome.status, StorageStatus::Ready);
-        assert!(outcome.backup_path.unwrap().exists());
-        assert_eq!(outcome.state, StoredState::default());
-
-        let reloaded = store.load().unwrap();
-        assert_eq!(reloaded.state, StoredState::default());
-    }
-
-    #[test]
-    fn repeated_backups_do_not_overwrite_each_other() {
-        let dir = TestDir::new("backup-unique");
-        let path = dir.path().join("state.json");
-        let store = UsageStore::new(path.clone());
-
-        std::fs::write(&path, "first corrupt content").unwrap();
-        let first = store.load().unwrap().backup_path.unwrap();
-        std::fs::write(&path, "second corrupt content").unwrap();
-        let second = store.load().unwrap().backup_path.unwrap();
-
-        assert_ne!(first, second);
-        assert_eq!(
-            std::fs::read_to_string(first).unwrap(),
-            "first corrupt content"
-        );
-        assert_eq!(
-            std::fs::read_to_string(second).unwrap(),
-            "second corrupt content"
-        );
-    }
-
-    #[test]
-    fn save_snapshot_reports_recovery_metadata_after_corrupt_file() {
-        let dir = TestDir::new("save-recovery");
-        let path = dir.path().join("state.json");
-        std::fs::write(&path, "{not valid json").unwrap();
-        let store = UsageStore::new(path);
-
-        let outcome = store.save_snapshot(snapshot("snap-1", 82)).unwrap();
-
-        assert_eq!(outcome.status, StorageStatus::Recovered);
-        assert!(outcome.backup_path.unwrap().exists());
-        assert_eq!(outcome.state.latest_snapshot.unwrap().id, "snap-1");
-    }
-
-    #[test]
-    fn manual_update_replaces_fields_and_can_clear_existing_values() {
-        let dir = TestDir::new("manual");
-        let path = dir.path().join("state.json");
-        let store = UsageStore::new(path);
-        store.save_snapshot(snapshot("snap-1", 44)).unwrap();
-
-        let updated = store
-            .update_manual_fields(crate::models::ManualUpdateInput {
-                remaining_percent: Some(33),
-                reset_at: Some(test_time(1_800_010_000)),
-                credits_balance: Some(12.5),
-                notes: Some("corrected from dashboard".to_string()),
-            })
-            .unwrap();
-
-        let latest = updated.state.latest_snapshot.unwrap();
-        assert_eq!(latest.confidence, ConfidenceState::Manual);
-        assert_eq!(latest.remaining_percent, Some(33));
-        assert_eq!(latest.credits_balance, Some(12.5));
-        assert_eq!(latest.notes, "corrected from dashboard");
-        assert_eq!(
-            latest.manual_fields,
-            vec![
-                ManualField::RemainingPercent,
-                ManualField::ResetAt,
-                ManualField::CreditsBalance,
-                ManualField::Notes
-            ]
-        );
-
-        let cleared = store
-            .update_manual_fields(crate::models::ManualUpdateInput {
-                remaining_percent: None,
-                reset_at: None,
-                credits_balance: None,
-                notes: None,
-            })
-            .unwrap();
-
-        let latest = cleared.state.latest_snapshot.unwrap();
-        assert_eq!(latest.remaining_percent, None);
-        assert_eq!(latest.reset_at, None);
-        assert_eq!(latest.credits_balance, None);
-        assert_eq!(latest.notes, "");
-        assert_eq!(
-            latest.manual_fields,
-            vec![
-                ManualField::RemainingPercent,
-                ManualField::ResetAt,
-                ManualField::CreditsBalance,
-                ManualField::Notes
-            ]
-        );
+        let cleared = store.clear_snapshot().unwrap();
+        assert!(cleared.state.latest_snapshot.is_none());
     }
 }

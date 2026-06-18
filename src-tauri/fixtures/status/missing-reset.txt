@@ -1,4 +1,0 @@
-Codex status
-Model: gpt-5.4
-Remaining: 45%
-Context: 128k tokens

@@ -1,44 +1,58 @@
 import type { QuotaDockApi } from "$lib/api/tauri";
 import { tauriApi } from "$lib/api/tauri";
-import type { AppState, ManualUpdateInput, Settings, UsageSnapshot } from "$lib/types/usage";
+import type { AppState, QuotaSnapshot } from "$lib/types/usage";
 
 export class UsageState {
   appState = $state<AppState | null>(null);
-  parsedDraft = $state<UsageSnapshot | null>(null);
+  parsedDraft = $state<QuotaSnapshot | null>(null);
+  pasteText = $state("");
   loading = $state(false);
+  refreshing = $state(false);
   parsing = $state(false);
   saving = $state(false);
-  probing = $state(false);
   errorMessage = $state<string | null>(null);
+  noticeMessage = $state<string | null>(null);
 
   constructor(private readonly api: QuotaDockApi = tauriApi) {}
 
-  get latestSnapshot(): UsageSnapshot | null {
-    return this.appState?.latestSnapshot ?? null;
-  }
-
-  get settings(): Settings | null {
-    return this.appState?.settings ?? null;
-  }
-
-  get history(): UsageSnapshot[] {
-    return this.appState?.history ?? [];
+  get activeSnapshot(): QuotaSnapshot | null {
+    return this.parsedDraft ?? this.appState?.latestSnapshot ?? null;
   }
 
   async load(): Promise<void> {
     await this.capture(async () => {
       this.loading = true;
       this.appState = await this.api.getAppState();
+      this.noticeMessage = this.appState.statusMessage;
     }).finally(() => {
       this.loading = false;
     });
   }
 
-  async parseStatusText(rawText: string): Promise<void> {
+  async refreshUsage(): Promise<void> {
+    await this.capture(async () => {
+      this.refreshing = true;
+      const result = await this.api.refreshUsage();
+      this.appState = result.appState;
+      this.parsedDraft = null;
+      this.noticeMessage = result.message;
+    }).finally(() => {
+      this.refreshing = false;
+    });
+  }
+
+  async parseStatusText(): Promise<void> {
+    const rawText = this.pasteText.trim();
+    if (!rawText) {
+      this.noticeMessage = "请先粘贴 /status 内容。";
+      return;
+    }
+
     await this.capture(async () => {
       this.parsing = true;
       const result = await this.api.parseStatusText(rawText);
       this.parsedDraft = result.snapshot;
+      this.noticeMessage = result.snapshot.statusMessage;
     }).finally(() => {
       this.parsing = false;
     });
@@ -46,60 +60,30 @@ export class UsageState {
 
   async saveParsedDraft(): Promise<void> {
     if (!this.parsedDraft) {
+      this.noticeMessage = "没有可保存的解析结果。";
       return;
     }
+
     await this.capture(async () => {
       this.saving = true;
-      this.appState = await this.api.saveSnapshot(this.parsedDraft as UsageSnapshot);
+      this.appState = await this.api.saveSnapshot(this.parsedDraft as QuotaSnapshot);
       this.parsedDraft = null;
+      this.pasteText = "";
+      this.noticeMessage = this.appState.statusMessage;
     }).finally(() => {
       this.saving = false;
     });
   }
 
-  async updateManualFields(input: ManualUpdateInput): Promise<void> {
+  async clearSnapshot(): Promise<void> {
     await this.capture(async () => {
       this.saving = true;
-      this.appState = await this.api.updateManualFields(input);
-    }).finally(() => {
-      this.saving = false;
-    });
-  }
-
-  async refreshProbe(): Promise<void> {
-    await this.capture(async () => {
-      this.probing = true;
-      const codexHealth = await this.api.refreshCodexProbe();
-      if (this.appState) {
-        this.appState = { ...this.appState, codexHealth };
-      }
-    }).finally(() => {
-      this.probing = false;
-    });
-  }
-
-  async updateSettings(settings: Settings): Promise<void> {
-    await this.capture(async () => {
-      this.saving = true;
-      this.appState = await this.api.updateSettings(settings);
-    }).finally(() => {
-      this.saving = false;
-    });
-  }
-
-  async backupAndResetStore(): Promise<void> {
-    await this.capture(async () => {
-      this.saving = true;
-      this.appState = await this.api.backupAndResetStore();
+      this.appState = await this.api.clearSnapshot();
       this.parsedDraft = null;
+      this.pasteText = "";
+      this.noticeMessage = "已清空额度快照。";
     }).finally(() => {
       this.saving = false;
-    });
-  }
-
-  async openOfficialUsage(): Promise<void> {
-    await this.capture(async () => {
-      await this.api.openOfficialUsage();
     });
   }
 

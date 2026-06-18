@@ -1,100 +1,87 @@
-use crate::models::{ConfidenceState, ParseWarning, SnapshotSource, UsageSnapshot};
-#[cfg(test)]
-use crate::models::{ManualField, ManualUpdateInput};
+use crate::models::{ParseWarning, QuotaReading, QuotaSnapshot, SnapshotSource};
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseResult {
-    pub snapshot: UsageSnapshot,
+    pub snapshot: QuotaSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseClock {
-    parsed_at: String,
+    captured_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuotaKind {
+    FiveHour,
+    Weekly,
 }
 
 impl ParseClock {
     pub fn now() -> Self {
         Self {
-            parsed_at: unix_timestamp_string(),
+            captured_at: unix_timestamp_string(),
         }
     }
 
     #[cfg(test)]
-    pub fn fixed(parsed_at: &str) -> Self {
+    pub fn fixed(captured_at: &str) -> Self {
         Self {
-            parsed_at: parsed_at.to_string(),
+            captured_at: captured_at.to_string(),
         }
-    }
-}
-
-impl ParseResult {
-    #[cfg(test)]
-    pub fn apply_manual_overlay(&mut self, input: ManualUpdateInput) {
-        self.snapshot.source = SnapshotSource::Manual;
-        self.snapshot.confidence = ConfidenceState::Manual;
-        self.snapshot.remaining_percent = input.remaining_percent;
-        self.snapshot.reset_at = input.reset_at;
-        self.snapshot.credits_balance = input.credits_balance;
-        self.snapshot.notes = input.notes.unwrap_or_default();
-        self.snapshot.manual_fields = vec![
-            ManualField::RemainingPercent,
-            ManualField::ResetAt,
-            ManualField::CreditsBalance,
-            ManualField::Notes,
-        ];
     }
 }
 
 pub fn parse_status_text(raw_text: &str, clock: ParseClock) -> ParseResult {
-    let mut extracted = ExtractedStatus::default();
+    parse_status_text_with_source(raw_text, clock, SnapshotSource::PastedStatus)
+}
+
+pub fn parse_status_text_with_source(
+    raw_text: &str,
+    clock: ParseClock,
+    source: SnapshotSource,
+) -> ParseResult {
+    let mut five_hour = QuotaReading::default();
+    let mut weekly = QuotaReading::default();
+    let mut active_window: Option<QuotaKind> = None;
     let mut unknown_lines = Vec::new();
 
     for line in raw_text.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("codex status") {
+        if trimmed.is_empty() || is_generic_status_header(trimmed) {
             continue;
         }
 
-        let mut matched = false;
-        if extracted.model.is_none() {
-            if let Some(model) = extract_model(trimmed) {
-                extracted.model = Some(model);
-                matched = true;
-            }
+        let labels = detect_windows(trimmed);
+        if labels.len() == 1 {
+            active_window = labels.first().copied();
         }
-        if extracted.remaining_percent.is_none() {
+
+        let targets = if !labels.is_empty() {
+            labels
+        } else if line_has_quota_value(trimmed) {
+            active_window.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut matched = !targets.is_empty();
+        for target in targets {
+            let reading = match target {
+                QuotaKind::FiveHour => &mut five_hour,
+                QuotaKind::Weekly => &mut weekly,
+            };
+
             if let Some(percent) = extract_percent(trimmed) {
-                extracted.remaining_percent = Some(percent);
+                reading.remaining_percent = Some(percent);
                 matched = true;
             }
-        }
-        if extracted.reset_at.is_none() {
             if let Some(reset_at) = extract_reset_at(trimmed) {
-                extracted.reset_at = Some(reset_at);
+                reading.reset_at = Some(reset_at);
                 matched = true;
-            }
-        }
-        if extracted.reset_countdown_seconds.is_none() {
-            if let Some(seconds) = extract_countdown(trimmed) {
-                extracted.reset_countdown_seconds = Some(seconds);
-                matched = true;
-            }
-        }
-        if extracted.credits_balance.is_none() {
-            if let Some(balance) =
-                extract_decimal_after_keywords(trimmed, &["credits balance", "balance"])
-            {
-                extracted.credits_balance = Some(balance);
-                matched = true;
-            }
-        }
-        if extracted.context_window.is_none() {
-            if let Some(context) =
-                extract_value_after_keywords(trimmed, &["context window", "context"])
-            {
-                extracted.context_window = Some(context);
+            } else if let Some(seconds) = extract_countdown(trimmed) {
+                reading.reset_countdown_seconds = Some(seconds);
                 matched = true;
             }
         }
@@ -105,194 +92,179 @@ pub fn parse_status_text(raw_text: &str, clock: ParseClock) -> ParseResult {
     }
 
     let mut warnings = Vec::new();
-    let has_usage_field = extracted.remaining_percent.is_some()
-        || extracted.reset_at.is_some()
-        || extracted.reset_countdown_seconds.is_some()
-        || extracted.credits_balance.is_some()
-        || extracted.model.is_some()
-        || extracted.context_window.is_some();
-
-    if !has_usage_field {
-        warnings.push(warning(
-            "no-usage-fields",
-            "No recognizable Codex usage fields were found.",
-        ));
-    } else {
-        if extracted.remaining_percent.is_none() {
-            warnings.push(warning(
-                "missing-remaining-percent",
-                "No remaining usage percentage was found.",
-            ));
-        }
-        if extracted.reset_at.is_none() && extracted.reset_countdown_seconds.is_none() {
-            warnings.push(warning(
-                "missing-reset",
-                "No reset time or countdown was found.",
-            ));
-        }
-        if !unknown_lines.is_empty() {
-            warnings.push(warning(
-                "unknown-lines",
-                "Some pasted lines were not recognized and were preserved in raw text.",
-            ));
-        }
+    if !five_hour.has_value() {
+        warnings.push(warning("missing-five-hour", "未识别到 5 小时额度。"));
+    }
+    if !weekly.has_value() {
+        warnings.push(warning("missing-weekly", "未识别到 1 周额度。"));
+    }
+    if !unknown_lines.is_empty() && (five_hour.has_value() || weekly.has_value()) {
+        warnings.push(warning("unknown-lines", "部分粘贴内容未被识别，已忽略。"));
+    }
+    if !five_hour.has_value() && !weekly.has_value() {
+        warnings.push(warning("no-quota-fields", "没有找到可用的额度信息。"));
     }
 
-    let confidence = if !has_usage_field {
-        ConfidenceState::Unavailable
-    } else if extracted.remaining_percent.is_some()
-        && (extracted.reset_at.is_some() || extracted.reset_countdown_seconds.is_some())
+    let status_message = if warnings
+        .iter()
+        .any(|warning| warning.code == "no-quota-fields")
     {
-        ConfidenceState::Fresh
+        "没有识别到 5 小时或 1 周额度，请检查 /status 内容。".to_string()
+    } else if warnings.is_empty() {
+        "已更新 5 小时与 1 周额度。".to_string()
     } else {
-        ConfidenceState::Partial
+        "已更新可识别的额度，部分字段缺失。".to_string()
     };
 
     ParseResult {
-        snapshot: UsageSnapshot {
-            id: clock.parsed_at.clone(),
-            source: SnapshotSource::PastedStatus,
-            parsed_at: clock.parsed_at,
-            remaining_percent: extracted.remaining_percent,
-            reset_at: extracted.reset_at,
-            reset_countdown_seconds: extracted.reset_countdown_seconds,
-            credits_balance: extracted.credits_balance,
-            model: extracted.model,
-            context_window: extracted.context_window,
-            confidence,
+        snapshot: QuotaSnapshot {
+            id: clock.captured_at.clone(),
+            source,
+            captured_at: clock.captured_at,
+            five_hour,
+            weekly,
             raw_text: raw_text.to_string(),
-            manual_fields: Vec::new(),
+            status_message,
             warnings,
-            notes: String::new(),
         },
     }
 }
 
-#[derive(Debug, Default)]
-struct ExtractedStatus {
-    model: Option<String>,
-    remaining_percent: Option<u8>,
-    reset_at: Option<String>,
-    reset_countdown_seconds: Option<i64>,
-    credits_balance: Option<f64>,
-    context_window: Option<String>,
+fn detect_windows(line: &str) -> Vec<QuotaKind> {
+    let lower = line.to_ascii_lowercase();
+    let mut windows = Vec::new();
+
+    if contains_any(
+        &lower,
+        &[
+            "5h", "5 h", "5-hour", "5 hour", "5-hour", "5 hours", "5小时", "5 小时",
+        ],
+    ) {
+        windows.push(QuotaKind::FiveHour);
+    }
+    if contains_any(
+        &lower,
+        &[
+            "weekly",
+            "1w",
+            "1 w",
+            "1-week",
+            "1 week",
+            "7d",
+            "7 d",
+            "week",
+            "1周",
+            "一周",
+            "周额度",
+        ],
+    ) {
+        windows.push(QuotaKind::Weekly);
+    }
+
+    windows
 }
 
-fn extract_model(line: &str) -> Option<String> {
-    if !contains_any(line, &["model", "active model"]) {
-        return None;
-    }
-    if let Some(value) = value_after_colon(line) {
-        return Some(value);
-    }
-    line.split_whitespace()
-        .find(|token| token.starts_with("gpt-"))
-        .map(clean_token)
+fn line_has_quota_value(line: &str) -> bool {
+    line.contains('%') || contains_reset_keyword(line)
 }
 
 fn extract_percent(line: &str) -> Option<u8> {
-    let lower = line.to_ascii_lowercase();
-    if !(lower.contains("remaining") || lower.contains(" left") || lower.contains("available")) {
+    let hits = percent_hits(line);
+    if hits.is_empty() {
         return None;
     }
 
-    let tokens: Vec<&str> = line.split_whitespace().collect();
-    for (index, token) in tokens.iter().enumerate() {
-        let Some(value) = parse_percent_token(token) else {
-            continue;
-        };
-        if value <= 100 && nearby_percent_label(&tokens, index) {
-            return Some(value);
-        }
+    let lower = line.to_ascii_lowercase();
+    let remaining_positions = keyword_positions(
+        line,
+        &["remaining", "left", "available", "remain", "剩余", "可用"],
+    );
+    if !remaining_positions.is_empty() {
+        return hits
+            .into_iter()
+            .min_by_key(|hit| {
+                remaining_positions
+                    .iter()
+                    .map(|position| hit.index.abs_diff(*position))
+                    .min()
+                    .unwrap_or(usize::MAX)
+            })
+            .map(|hit| hit.value);
     }
-    None
+
+    if contains_any(&lower, &["used", "spent", "已用", "使用"]) {
+        return None;
+    }
+
+    hits.first().map(|hit| hit.value)
 }
 
-fn parse_percent_token(token: &str) -> Option<u8> {
-    let stripped = token
-        .trim_matches(|character: char| {
-            character == ':'
-                || character == ','
-                || character == ';'
-                || character == '('
-                || character == ')'
-        })
-        .trim_end_matches('%');
-    stripped.parse::<u8>().ok()
+#[derive(Debug, Clone, Copy)]
+struct PercentHit {
+    value: u8,
+    index: usize,
 }
 
-fn nearby_percent_label(tokens: &[&str], index: usize) -> bool {
-    let previous = index
-        .checked_sub(1)
-        .and_then(|previous| tokens.get(previous))
-        .is_some_and(|token| is_remaining_label(token));
-    let next = tokens
-        .get(index + 1)
-        .is_some_and(|token| is_remaining_label(token));
-    previous || next
-}
+fn percent_hits(line: &str) -> Vec<PercentHit> {
+    let mut hits = Vec::new();
+    let mut digits = String::new();
+    let mut digit_start = 0_usize;
 
-fn is_remaining_label(token: &str) -> bool {
-    let cleaned = token
-        .trim_matches(|character: char| {
-            character == ':'
-                || character == ','
-                || character == ';'
-                || character == '('
-                || character == ')'
-        })
-        .to_ascii_lowercase();
-    cleaned == "remaining" || cleaned == "left" || cleaned == "available"
+    for (index, character) in line.char_indices() {
+        if character.is_ascii_digit() {
+            if digits.is_empty() {
+                digit_start = index;
+            }
+            digits.push(character);
+            continue;
+        }
+
+        if character == '%' {
+            if let Ok(value) = digits.parse::<u8>() {
+                if value <= 100 {
+                    hits.push(PercentHit {
+                        value,
+                        index: digit_start,
+                    });
+                }
+            }
+        }
+        digits.clear();
+    }
+
+    hits
 }
 
 fn extract_reset_at(line: &str) -> Option<String> {
-    let lower = line.to_ascii_lowercase();
-    if !(lower.contains("reset at") || lower.contains("resets at")) {
+    if !contains_reset_keyword(line) {
         return None;
     }
 
-    if let Some(value) = value_after_colon(line) {
-        return normalize_reset_timestamp(&value);
+    for token in line.split_whitespace() {
+        let cleaned = token.trim_matches(|character: char| {
+            character == ',' || character == ';' || character == ')' || character == '('
+        });
+        if let Some(value) = normalize_reset_timestamp(cleaned) {
+            return Some(value);
+        }
     }
 
-    let lower = line.to_ascii_lowercase();
-    let at_index = lower.rfind(" at ")?;
-    normalize_reset_timestamp(line[at_index + 4..].trim())
+    value_after_colon(line).filter(|value| !value.contains('%') && !looks_like_countdown(value))
 }
 
 fn extract_countdown(line: &str) -> Option<i64> {
-    let lower = line.to_ascii_lowercase();
-    if !(lower.contains("reset in") || lower.contains("resets in")) {
+    if !contains_reset_keyword(line) && !line.contains('后') {
         return None;
     }
 
-    let mut seconds = 0_i64;
-    let tokens: Vec<&str> = line.split_whitespace().collect();
-    for window in tokens.windows(2) {
-        let value = window[0].parse::<i64>().ok();
-        let unit = window[1].trim_matches(|character: char| character == ',' || character == ';');
-        if let Some(value) = value {
-            if unit.starts_with('h') {
-                seconds += value * 3_600;
-            } else if unit.starts_with('m') {
-                seconds += value * 60;
-            } else if unit.starts_with('s') {
-                seconds += value;
-            }
-        }
-    }
-    if seconds > 0 {
-        return Some(seconds);
-    }
-
-    let compact = line.replace(' ', "");
-    Some(parse_compact_countdown(&compact)?)
-}
-
-fn parse_compact_countdown(value: &str) -> Option<i64> {
+    let candidate = countdown_segment(line);
+    let compact = strip_percent_segments(candidate)
+        .replace(' ', "")
+        .to_ascii_lowercase();
     let mut number = String::new();
     let mut seconds = 0_i64;
-    for character in value.chars() {
+
+    for character in compact.chars() {
         if character.is_ascii_digit() {
             number.push(character);
             continue;
@@ -302,56 +274,95 @@ fn parse_compact_countdown(value: &str) -> Option<i64> {
             continue;
         }
 
-        let parsed = number.parse::<i64>().ok()?;
-        match character.to_ascii_lowercase() {
-            'h' => seconds += parsed * 3_600,
-            'm' => seconds += parsed * 60,
-            's' => seconds += parsed,
+        let value = number.parse::<i64>().ok()?;
+        match character {
+            'd' | '天' => {
+                seconds += value * 86_400;
+                number.clear();
+            }
+            'h' | '时' => {
+                seconds += value * 3_600;
+                number.clear();
+            }
+            'm' | '分' => {
+                seconds += value * 60;
+                number.clear();
+            }
+            's' | '秒' => {
+                seconds += value;
+                number.clear();
+            }
             _ => {}
         }
-        number.clear();
     }
+
     (seconds > 0).then_some(seconds)
 }
 
-fn extract_decimal_after_keywords(line: &str, keywords: &[&str]) -> Option<f64> {
-    if !contains_any(line, keywords) {
-        return None;
-    }
-    for token in line.split_whitespace() {
-        let cleaned = token.trim_matches(|character: char| {
-            character == ':' || character == ',' || character == ';' || character == '$'
-        });
-        if let Ok(value) = cleaned.parse::<f64>() {
-            return Some(value);
+fn contains_reset_keyword(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    contains_any(
+        &lower,
+        &[
+            "reset", "resets", "renew", "update", "refresh", "重置", "刷新", "更新",
+        ],
+    )
+}
+
+fn countdown_segment(line: &str) -> &str {
+    let lower = line.to_ascii_lowercase();
+    let keywords = [
+        "resets in",
+        "reset in",
+        "resets",
+        "reset",
+        "refresh",
+        "update",
+        "renew",
+        "刷新",
+        "更新",
+        "重置",
+    ];
+
+    for keyword in keywords {
+        if let Some(index) = lower.find(keyword) {
+            return &line[index + keyword.len()..];
         }
     }
-    None
+
+    line
 }
 
-fn extract_value_after_keywords(line: &str, keywords: &[&str]) -> Option<String> {
-    if !contains_any(line, keywords) {
-        return None;
+fn strip_percent_segments(line: &str) -> String {
+    let mut output = String::new();
+    let mut digits = String::new();
+
+    for character in line.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+            continue;
+        }
+
+        if character == '%' {
+            digits.clear();
+            continue;
+        }
+
+        output.push_str(&digits);
+        digits.clear();
+        output.push(character);
     }
-    value_after_colon(line)
+
+    output.push_str(&digits);
+    output
 }
 
-fn contains_any(line: &str, needles: &[&str]) -> bool {
-    let lower = line.to_ascii_lowercase();
-    needles.iter().any(|needle| lower.contains(needle))
-}
-
-fn value_after_colon(line: &str) -> Option<String> {
-    let (label, value) = line.split_once(':')?;
-    if label.chars().any(|character| character.is_ascii_digit()) {
-        return None;
-    }
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
+fn looks_like_countdown(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    contains_any(
+        &lower,
+        &["h", "m", "s", "d", "小时", "分钟", "秒", "天", "后"],
+    )
 }
 
 fn normalize_reset_timestamp(value: &str) -> Option<String> {
@@ -378,10 +389,28 @@ fn is_iso_z_timestamp(value: &str) -> bool {
         })
 }
 
-fn clean_token(token: &str) -> String {
-    token
-        .trim_matches(|character: char| character == ':' || character == ',' || character == ';')
-        .to_string()
+fn value_after_colon(line: &str) -> Option<String> {
+    line.rsplit_once('：')
+        .or_else(|| line.split_once(':'))
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn keyword_positions(line: &str, keywords: &[&str]) -> Vec<usize> {
+    let lower = line.to_ascii_lowercase();
+    keywords
+        .iter()
+        .filter_map(|keyword| lower.find(&keyword.to_ascii_lowercase()))
+        .collect()
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
+}
+
+fn is_generic_status_header(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower == "codex status" || lower == "/status" || lower == "status"
 }
 
 fn warning(code: &str, message: &str) -> ParseWarning {
@@ -401,174 +430,80 @@ fn unix_timestamp_string() -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{ConfidenceState, ManualField};
     use crate::status_parser::{parse_status_text, ParseClock};
 
-    const PARSED_AT: &str = "2026-06-18T04:55:00Z";
+    const CAPTURED_AT: &str = "2026-06-18T08:00:00Z";
 
     fn parse(raw: &str) -> crate::status_parser::ParseResult {
-        parse_status_text(raw, ParseClock::fixed(PARSED_AT))
+        parse_status_text(raw, ParseClock::fixed(CAPTURED_AT))
     }
 
     #[test]
-    fn parses_complete_status_text() {
-        let result = parse(include_str!("../fixtures/status/complete-status.txt"));
+    fn parses_complete_dual_window_status() {
+        let result = parse(
+            "Codex status\n5h limit\nRemaining: 72%\nResets in: 2h 15m\nWeekly limit\nRemaining: 46%\nReset at: 2026-06-23T09:00:00Z",
+        );
 
-        assert_eq!(result.snapshot.model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(result.snapshot.remaining_percent, Some(72));
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(72));
         assert_eq!(
-            result.snapshot.reset_at.as_deref(),
-            Some("2026-06-18T07:10:00Z")
+            result.snapshot.five_hour.reset_countdown_seconds,
+            Some(8_100)
         );
-        assert_eq!(result.snapshot.credits_balance, Some(12.5));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(46));
         assert_eq!(
-            result.snapshot.context_window.as_deref(),
-            Some("200k tokens")
+            result.snapshot.weekly.reset_at.as_deref(),
+            Some("2026-06-23T09:00:00Z")
         );
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Fresh);
-        assert_eq!(result.snapshot.parsed_at, PARSED_AT);
         assert!(result.snapshot.warnings.is_empty());
-        assert!(result.snapshot.raw_text.contains("Usage remaining"));
     }
 
     #[test]
-    fn missing_reset_is_partial_with_warning() {
-        let result = parse(include_str!("../fixtures/status/missing-reset.txt"));
+    fn parses_chinese_inline_status() {
+        let result =
+            parse("5小时额度：剩余 88%，刷新 1小时30分钟后\n1周额度：剩余 62%，更新：周一 09:00");
 
-        assert_eq!(result.snapshot.remaining_percent, Some(45));
-        assert_eq!(result.snapshot.reset_at, None);
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Partial);
-        assert!(result
-            .snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-reset"));
-    }
-
-    #[test]
-    fn missing_percent_is_partial_with_countdown_and_credit() {
-        let result = parse(include_str!("../fixtures/status/missing-percent.txt"));
-
-        assert_eq!(result.snapshot.remaining_percent, None);
-        assert_eq!(result.snapshot.reset_countdown_seconds, Some(8_100));
-        assert_eq!(result.snapshot.credits_balance, Some(9.25));
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Partial);
-        assert!(result
-            .snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-remaining-percent"));
-    }
-
-    #[test]
-    fn parses_reordered_lines() {
-        let result = parse(include_str!("../fixtures/status/reordered-lines.txt"));
-
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(88));
         assert_eq!(
-            result.snapshot.model.as_deref(),
-            Some("gpt-5.3-codex-spark")
+            result.snapshot.five_hour.reset_countdown_seconds,
+            Some(5_400)
         );
-        assert_eq!(result.snapshot.remaining_percent, Some(64));
-        assert_eq!(result.snapshot.reset_countdown_seconds, Some(5_400));
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Fresh);
-    }
-
-    #[test]
-    fn accepts_extra_noise_without_failing_parse() {
-        let result = parse(include_str!("../fixtures/status/extra-noise.txt"));
-
-        assert_eq!(result.snapshot.model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(result.snapshot.remaining_percent, Some(18));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(62));
         assert_eq!(
-            result.snapshot.reset_at.as_deref(),
-            Some("2026-06-18T09:00:00Z")
+            result.snapshot.weekly.reset_at.as_deref(),
+            Some("周一 09:00")
         );
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Fresh);
+    }
+
+    #[test]
+    fn picks_remaining_percent_when_used_is_also_present() {
+        let result = parse("5h usage: 28% used, 72% remaining\n1w usage: remaining 46%");
+
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(72));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(46));
+    }
+
+    #[test]
+    fn reports_partial_when_one_window_is_missing() {
+        let result = parse("5h remaining: 31%\n5h reset in 10m");
+
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(31));
+        assert!(result.snapshot.weekly.remaining_percent.is_none());
         assert!(result
             .snapshot
             .warnings
             .iter()
-            .any(|warning| warning.code == "unknown-lines"));
+            .any(|warning| warning.code == "missing-weekly"));
     }
 
     #[test]
-    fn unknown_format_is_unavailable_and_preserves_raw_text() {
-        let raw = include_str!("../fixtures/status/unknown-format.txt");
-        let result = parse(raw);
+    fn reports_unknown_format() {
+        let result = parse("all systems nominal");
 
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Unavailable);
-        assert_eq!(result.snapshot.raw_text, raw);
+        assert!(!result.snapshot.has_any_usage());
         assert!(result
             .snapshot
             .warnings
             .iter()
-            .any(|warning| warning.code == "no-usage-fields"));
-    }
-
-    #[test]
-    fn rejects_used_percent_invalid_reset_and_non_balance_credits() {
-        let result = parse(include_str!("../fixtures/status/adversarial-status.txt"));
-
-        assert_eq!(result.snapshot.model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(result.snapshot.remaining_percent, None);
-        assert_eq!(result.snapshot.reset_at, None);
-        assert_eq!(result.snapshot.credits_balance, None);
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Partial);
-        assert!(result
-            .snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-remaining-percent"));
-        assert!(result
-            .snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-reset"));
-    }
-
-    #[test]
-    fn mixed_used_and_remaining_line_uses_remaining_percent() {
-        let result = parse("Model: gpt-5.5\nUsage: 82% used, 18% remaining\nReset in: 1h");
-
-        assert_eq!(result.snapshot.remaining_percent, Some(18));
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Fresh);
-    }
-
-    #[test]
-    fn mixed_used_and_remaining_prefix_line_uses_remaining_percent() {
-        let result = parse("Model: gpt-5.5\nUsage: 82% used, remaining 18%\nReset in: 1h");
-
-        assert_eq!(result.snapshot.remaining_percent, Some(18));
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Fresh);
-    }
-
-    #[test]
-    fn manual_overlay_replaces_fields_and_marks_manual() {
-        let mut result = parse(include_str!("../fixtures/status/missing-percent.txt"));
-
-        result.apply_manual_overlay(crate::models::ManualUpdateInput {
-            remaining_percent: Some(22),
-            reset_at: Some("2026-06-18T11:00:00Z".to_string()),
-            credits_balance: None,
-            notes: Some("Corrected from official dashboard".to_string()),
-        });
-
-        assert_eq!(result.snapshot.confidence, ConfidenceState::Manual);
-        assert_eq!(result.snapshot.remaining_percent, Some(22));
-        assert_eq!(
-            result.snapshot.reset_at.as_deref(),
-            Some("2026-06-18T11:00:00Z")
-        );
-        assert_eq!(result.snapshot.credits_balance, None);
-        assert_eq!(result.snapshot.notes, "Corrected from official dashboard");
-        assert_eq!(
-            result.snapshot.manual_fields,
-            vec![
-                ManualField::RemainingPercent,
-                ManualField::ResetAt,
-                ManualField::CreditsBalance,
-                ManualField::Notes
-            ]
-        );
+            .any(|warning| warning.code == "no-quota-fields"));
     }
 }
