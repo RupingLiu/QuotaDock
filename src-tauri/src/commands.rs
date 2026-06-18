@@ -1,7 +1,9 @@
+use crate::codex_probe::probe_codex;
 use crate::models::{AppState, ManualUpdateInput, Settings, UsageSnapshot};
 use crate::status_parser::{parse_status_text as parse_status_text_impl, ParseClock, ParseResult};
 use crate::usage_store::{StoreError, UsageStore};
 use std::path::PathBuf;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 #[tauri::command]
@@ -16,6 +18,11 @@ pub fn get_app_state(app: AppHandle) -> Result<AppState, String> {
 #[tauri::command]
 pub fn parse_status_text(raw_text: String) -> ParseResult {
     parse_status_text_impl(&raw_text, ParseClock::now())
+}
+
+#[tauri::command]
+pub fn refresh_codex_probe() -> crate::models::CodexHealth {
+    probe_codex(Duration::from_secs(5))
 }
 
 #[tauri::command]

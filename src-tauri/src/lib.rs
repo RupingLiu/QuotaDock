@@ -1,6 +1,8 @@
 #![cfg_attr(test, allow(dead_code))]
 
+mod codex_probe;
 mod models;
+mod redaction;
 mod status_parser;
 mod usage_store;
 
@@ -15,6 +17,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
             commands::parse_status_text,
+            commands::refresh_codex_probe,
             commands::save_snapshot,
             commands::update_manual_fields,
             commands::update_settings,
