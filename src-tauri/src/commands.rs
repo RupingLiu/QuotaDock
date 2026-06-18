@@ -118,6 +118,7 @@ fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
     let mut result =
         parse_status_text_with_source(&output, ParseClock::now(), SnapshotSource::CodexCli);
     result.snapshot.status_message = "已通过 Codex CLI 更新额度。".to_string();
+    result.snapshot.raw_text.clear();
     if result.snapshot.has_any_usage() {
         Ok(result.snapshot)
     } else {
@@ -143,6 +144,11 @@ fn run_codex_status_pty(timeout: Duration) -> Result<String, String> {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn probe_codex_status_output(timeout: Duration) -> Result<String, String> {
+    run_codex_status_pty(timeout)
+}
+
 #[cfg(windows)]
 mod windows_conpty {
     use super::{codex_status_output_ready, is_cmd_shim, should_send_status_command};
@@ -151,24 +157,260 @@ mod windows_conpty {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use std::ptr::{null, null_mut};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, HMODULE, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
+        CloseHandle, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, HMODULE, INVALID_HANDLE_VALUE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
     use windows_sys::Win32::System::Console::{COORD, HPCON};
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-    use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-        TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW,
-        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW, STARTUPINFOW,
+        CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+        InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
+        WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, STARTUPINFOW,
     };
 
+    const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
+    const PSEUDOCONSOLE_WIN32_INPUT_MODE: u32 = 0x4;
+    const PSEUDOCONSOLE_INHERIT_CURSOR: u32 = 0x1;
+
     pub fn capture_status(target: &Path, timeout: Duration) -> Result<String, String> {
+        capture_status_with_portable_pty(target, timeout)
+    }
+
+    fn capture_status_with_portable_pty(
+        target: &Path,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        use portable_pty::{native_pty_system, PtySize};
+        use std::io::{Read, Write};
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 30,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| format!("创建 Codex 伪终端失败：{error}"))?;
+
+        let mut command = portable_command(target);
+        if let Some(cwd) = user_profile_path() {
+            command.cwd(cwd);
+        }
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .map_err(|error| format!("启动 Codex CLI 失败：{error}"))?;
+        drop(pair.slave);
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| format!("读取 Codex 伪终端失败：{error}"))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| format!("打开 Codex 输入通道失败：{error}"))?;
+        let (sender, receiver) = mpsc::channel();
+        let _reader_thread = thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        if sender.send(buffer[..read].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        if std::env::var_os("QUOTADOCK_STATUS_PROBE_COMMAND").is_some() {
+            let started = Instant::now();
+            let mut output = Vec::new();
+            let mut cursor_reported = false;
+            loop {
+                drain_receiver(&receiver, &mut output);
+                let text = String::from_utf8_lossy(&output).to_string();
+                respond_to_cursor_query(&mut writer, &text, &mut cursor_reported)?;
+                if let Ok(Some(status)) = child.try_wait() {
+                    drain_receiver_for(&receiver, &mut output, Duration::from_millis(800));
+                    let text = String::from_utf8_lossy(&output).to_string();
+                    write_probe_log(&format!(
+                        "exit_code=Some({})\nbytes={}\n{text}",
+                        status.exit_code(),
+                        output.len()
+                    ));
+                    return Ok(text);
+                }
+                if started.elapsed() > timeout.min(Duration::from_secs(10)) {
+                    let _ = child.kill();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            drain_receiver_for(&receiver, &mut output, Duration::from_millis(800));
+            let text = String::from_utf8_lossy(&output).to_string();
+            write_probe_log(&format!(
+                "exit_code={:?}\nbytes={}\n{text}",
+                None::<u32>,
+                output.len()
+            ));
+            return Ok(text);
+        }
+
+        let started = Instant::now();
+        let mut output = Vec::new();
+        let mut sent_count = 0_u8;
+        let mut last_sent = started;
+        let mut cursor_reported = false;
+
+        loop {
+            drain_receiver(&receiver, &mut output);
+            let text = String::from_utf8_lossy(&output).to_string();
+            respond_to_cursor_query(&mut writer, &text, &mut cursor_reported)?;
+
+            if should_send_status_command(&text, started, last_sent, sent_count) {
+                writer
+                    .write_all(b"/status\r\n")
+                    .map_err(|error| format!("发送 /status 失败：{error}"))?;
+                writer
+                    .flush()
+                    .map_err(|error| format!("发送 /status 失败：{error}"))?;
+                sent_count += 1;
+                last_sent = Instant::now();
+            }
+
+            if sent_count > 0 && codex_status_output_ready(&text) {
+                let _ = child.kill();
+                write_probe_log(&format!(
+                    "exit_code={:?}\nbytes={}\n{text}",
+                    None::<u32>,
+                    output.len()
+                ));
+                return Ok(text);
+            }
+
+            if let Ok(Some(status)) = child.try_wait() {
+                drain_receiver_for(&receiver, &mut output, Duration::from_millis(800));
+                let text = String::from_utf8_lossy(&output).to_string();
+                write_probe_log(&format!(
+                    "exit_code=Some({})\nbytes={}\n{text}",
+                    status.exit_code(),
+                    output.len()
+                ));
+                if codex_status_output_ready(&text) {
+                    return Ok(text);
+                }
+                return Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string());
+            }
+
+            if started.elapsed() > timeout {
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        let _ = child.kill();
+        drop(writer);
+        drop(pair.master);
+        drain_receiver_for(&receiver, &mut output, Duration::from_millis(800));
+        let text = String::from_utf8_lossy(&output).to_string();
+        write_probe_log(&format!(
+            "exit_code={:?}\nbytes={}\n{text}",
+            None::<u32>,
+            output.len()
+        ));
+        if codex_status_output_ready(&text) {
+            return Ok(text);
+        }
+        Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string())
+    }
+
+    fn respond_to_cursor_query(
+        writer: &mut Box<dyn std::io::Write + Send>,
+        text: &str,
+        already_sent: &mut bool,
+    ) -> Result<(), String> {
+        if *already_sent || !text.contains("\u{1b}[6n") {
+            return Ok(());
+        }
+        writer
+            .write_all(b"\x1b[1;1R")
+            .map_err(|error| format!("回应 Codex 终端查询失败：{error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("回应 Codex 终端查询失败：{error}"))?;
+        *already_sent = true;
+        Ok(())
+    }
+
+    fn portable_command(target: &Path) -> portable_pty::CommandBuilder {
+        use portable_pty::CommandBuilder;
+
+        if let Some(override_command) = std::env::var_os("QUOTADOCK_STATUS_PROBE_COMMAND") {
+            let mut command = CommandBuilder::new("cmd.exe");
+            command.arg("/D");
+            command.arg("/C");
+            command.arg(override_command);
+            return command;
+        }
+
+        if is_cmd_shim(target) {
+            let mut command = CommandBuilder::new("cmd.exe");
+            command.arg("/D");
+            command.arg("/C");
+            command.arg(target);
+            command.arg("-c");
+            command.arg("mcp_servers={}");
+            command.arg("--no-alt-screen");
+            command
+        } else {
+            let mut command = CommandBuilder::new(target);
+            command.arg("-c");
+            command.arg("mcp_servers={}");
+            command.arg("--no-alt-screen");
+            command
+        }
+    }
+
+    fn user_profile_path() -> Option<std::path::PathBuf> {
+        std::env::var_os("USERPROFILE")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+
+    fn drain_receiver(receiver: &mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>) {
+        while let Ok(chunk) = receiver.try_recv() {
+            output.extend_from_slice(&chunk);
+        }
+    }
+
+    fn drain_receiver_for(
+        receiver: &mpsc::Receiver<Vec<u8>>,
+        output: &mut Vec<u8>,
+        duration: Duration,
+    ) {
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline {
+            drain_receiver(receiver, output);
+            thread::sleep(Duration::from_millis(25));
+        }
+        drain_receiver(receiver, output);
+    }
+
+    #[allow(dead_code)]
+    fn capture_status_with_raw_conpty(target: &Path, timeout: Duration) -> Result<String, String> {
         unsafe {
             let mut input_read = Handle::default();
             let mut input_write = Handle::default();
@@ -188,7 +430,9 @@ mod windows_conpty {
                 COORD { X: 100, Y: 30 },
                 input_read.raw(),
                 output_write.raw(),
-                0,
+                PSEUDOCONSOLE_INHERIT_CURSOR
+                    | PSEUDOCONSOLE_RESIZE_QUIRK
+                    | PSEUDOCONSOLE_WIN32_INPUT_MODE,
                 &mut hpc,
             );
             if hr < 0 {
@@ -198,12 +442,14 @@ mod windows_conpty {
                 hpc,
                 close: conpty.close,
             };
-            drop(input_read);
-            drop(output_write);
 
             let mut attributes = AttributeList::new(pseudo_console.raw())?;
             let mut startup: STARTUPINFOEXW = zeroed();
             startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            startup.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+            startup.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+            startup.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
             startup.lpAttributeList = attributes.raw();
 
             let mut process_info: PROCESS_INFORMATION = zeroed();
@@ -216,7 +462,7 @@ mod windows_conpty {
                 null(),
                 null(),
                 0,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                EXTENDED_STARTUPINFO_PRESENT,
                 null(),
                 cwd_ptr,
                 &startup as *const STARTUPINFOEXW as *const STARTUPINFOW,
@@ -227,6 +473,7 @@ mod windows_conpty {
             }
             let process = ChildProcess::new(process_info);
             drop(attributes);
+            let reader = OutputReader::start(output_read);
 
             let started = Instant::now();
             let mut output = Vec::new();
@@ -234,7 +481,7 @@ mod windows_conpty {
             let mut last_sent = started;
 
             loop {
-                read_available(output_read.raw(), &mut output)?;
+                reader.drain(&mut output);
                 let text = String::from_utf8_lossy(&output).to_string();
 
                 if should_send_status_command(&text, started, last_sent, sent_count) {
@@ -245,6 +492,11 @@ mod windows_conpty {
 
                 if sent_count > 0 && codex_status_output_ready(&text) {
                     process.terminate();
+                    write_probe_log(&format!(
+                        "exit_code={:?}\nbytes={}\n{text}",
+                        process.exit_code(),
+                        output.len()
+                    ));
                     return Ok(text);
                 }
 
@@ -260,8 +512,17 @@ mod windows_conpty {
             }
 
             process.terminate();
-            read_available(output_read.raw(), &mut output)?;
+            drop(input_write);
+            drop(input_read);
+            drop(output_write);
+            drop(pseudo_console);
+            reader.drain_for(&mut output, Duration::from_millis(800));
             let text = String::from_utf8_lossy(&output).to_string();
+            write_probe_log(&format!(
+                "exit_code={:?}\nbytes={}\n{text}",
+                process.exit_code(),
+                output.len()
+            ));
             if codex_status_output_ready(&text) {
                 return Ok(text);
             }
@@ -283,43 +544,6 @@ mod windows_conpty {
         windows_sys::Win32::Foundation::SetHandleInformation(write_raw, HANDLE_FLAG_INHERIT, 0);
         *read = Handle(read_raw);
         *write = Handle(write_raw);
-        Ok(())
-    }
-
-    unsafe fn read_available(handle: HANDLE, output: &mut Vec<u8>) -> Result<(), String> {
-        let mut available = 0_u32;
-        if PeekNamedPipe(
-            handle,
-            null_mut(),
-            0,
-            null_mut(),
-            &mut available,
-            null_mut(),
-        ) == 0
-        {
-            return Ok(());
-        }
-
-        while available > 0 {
-            let mut buffer = vec![0_u8; available.min(4096) as usize];
-            let mut read = 0_u32;
-            if ReadFile(
-                handle,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut read,
-                null_mut(),
-            ) == 0
-            {
-                return Ok(());
-            }
-            if read == 0 {
-                return Ok(());
-            }
-            output.extend_from_slice(&buffer[..read as usize]);
-            available = available.saturating_sub(read);
-        }
-
         Ok(())
     }
 
@@ -346,6 +570,10 @@ mod windows_conpty {
     }
 
     fn command_line(target: &Path) -> Vec<u16> {
+        if let Some(override_command) = std::env::var_os("QUOTADOCK_STATUS_PROBE_COMMAND") {
+            return wide_null(override_command.as_os_str());
+        }
+
         let target = target.to_string_lossy();
         let command = if is_cmd_shim(Path::new(target.as_ref())) {
             format!(
@@ -392,12 +620,25 @@ mod windows_conpty {
         unsafe { format!("{context}：Win32 错误 {}", GetLastError()) }
     }
 
+    fn write_probe_log(output: &str) {
+        let Some(path) = std::env::var_os("QUOTADOCK_STATUS_PROBE_LOG") else {
+            return;
+        };
+        let _ = std::fs::write(path, output);
+    }
+
     #[derive(Default)]
     struct Handle(HANDLE);
 
     impl Handle {
         fn raw(&self) -> HANDLE {
             self.0
+        }
+
+        fn take(&mut self) -> HANDLE {
+            let raw = self.0;
+            self.0 = null_mut();
+            raw
         }
     }
 
@@ -409,6 +650,77 @@ mod windows_conpty {
                 }
                 self.0 = null_mut();
             }
+        }
+    }
+
+    struct ReaderHandle(HANDLE);
+
+    unsafe impl Send for ReaderHandle {}
+
+    impl ReaderHandle {
+        fn into_raw(self) -> HANDLE {
+            self.0
+        }
+    }
+
+    struct OutputReader {
+        receiver: mpsc::Receiver<Vec<u8>>,
+        _thread: thread::JoinHandle<()>,
+    }
+
+    impl OutputReader {
+        unsafe fn start(mut output_read: Handle) -> Self {
+            let reader_handle = ReaderHandle(output_read.take());
+            let (sender, receiver) = mpsc::channel();
+            let thread = thread::spawn(move || {
+                let handle = Handle(reader_handle.into_raw());
+                loop {
+                    let mut buffer = vec![0_u8; 4096];
+                    let mut read = 0_u32;
+                    let ok = unsafe {
+                        ReadFile(
+                            handle.raw(),
+                            buffer.as_mut_ptr(),
+                            buffer.len() as u32,
+                            &mut read,
+                            null_mut(),
+                        )
+                    };
+                    if ok == 0 {
+                        let error = unsafe { GetLastError() };
+                        let _ = sender.send(format!("\n[quotadock-reader-error:{error}]\n").into());
+                        break;
+                    }
+                    if read == 0 {
+                        let _ = sender.send(b"\n[quotadock-reader-eof]\n".to_vec());
+                        break;
+                    }
+                    buffer.truncate(read as usize);
+                    if sender.send(buffer).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            Self {
+                receiver,
+                _thread: thread,
+            }
+        }
+
+        fn drain(&self, output: &mut Vec<u8>) {
+            while let Ok(chunk) = self.receiver.try_recv() {
+                output.extend_from_slice(&chunk);
+            }
+        }
+
+        fn drain_for(&self, output: &mut Vec<u8>, duration: Duration) {
+            let deadline = Instant::now() + duration;
+            while Instant::now() < deadline {
+                self.drain(output);
+                thread::sleep(Duration::from_millis(25));
+            }
+            self.drain(output);
         }
     }
 
@@ -550,6 +862,14 @@ mod windows_conpty {
                 WaitForSingleObject(self.process.raw(), 1000);
             }
             let _ = self.thread.raw();
+        }
+
+        unsafe fn exit_code(&self) -> Option<u32> {
+            if self.process.raw().is_null() {
+                return None;
+            }
+            let mut code = 0_u32;
+            (GetExitCodeProcess(self.process.raw(), &mut code) != 0).then_some(code)
         }
     }
 }
