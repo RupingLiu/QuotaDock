@@ -15,6 +15,7 @@ vite.config.ts.timestamp-*
 # Tauri / Rust output
 target/
 src-tauri/target/
+src-tauri/resources/windows/WebView2Loader.dll
 
 # Local environment and editor state
 .env
