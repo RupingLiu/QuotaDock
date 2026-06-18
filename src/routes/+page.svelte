@@ -1,11 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-
-  type AppState = {
-    status: "unavailable";
-    message: string;
-  };
+  import type { AppState } from "$lib/types/usage";
 
   let appState: AppState | null = null;
   let errorMessage: string | null = null;
@@ -32,9 +28,14 @@
   <section class="status-panel" aria-label="Current app state">
     <div>
       <span class="label">State</span>
-      <strong>{appState?.status ?? (errorMessage ? "unavailable" : "loading")}</strong>
+      <strong>{appState?.storageStatus ?? (errorMessage ? "unavailable" : "loading")}</strong>
     </div>
-    <p>{appState?.message ?? errorMessage ?? "Loading local state..."}</p>
+    <p>
+      {errorMessage ??
+        (appState?.latestSnapshot
+          ? "Latest local usage snapshot loaded."
+          : "No local usage snapshot yet. Paste or enter Codex status details in the next MVP tasks.")}
+    </p>
   </section>
 </main>
 

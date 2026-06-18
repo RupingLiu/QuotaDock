@@ -1,47 +1,26 @@
-use serde::Serialize;
+#![cfg_attr(test, allow(dead_code))]
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppState {
-    status: AppStateStatus,
-    message: String,
-}
+mod models;
+mod usage_store;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum AppStateStatus {
-    Unavailable,
-}
+#[cfg(not(test))]
+mod commands;
 
-#[tauri::command]
-fn get_app_state() -> AppState {
-    AppState {
-        status: AppStateStatus::Unavailable,
-        message: "Usage state unavailable until the MVP data modules are implemented.".to_string(),
-    }
-}
-
+#[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_app_state])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_app_state,
+            commands::save_snapshot,
+            commands::update_manual_fields,
+            commands::update_settings,
+            commands::backup_and_reset_store
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn get_app_state_returns_unavailable_placeholder() {
-        let state = serde_json::to_value(get_app_state()).expect("state should serialize");
-
-        assert_eq!(state["status"], "unavailable");
-        assert_eq!(
-            state["message"],
-            "Usage state unavailable until the MVP data modules are implemented."
-        );
-    }
-}
+pub fn run() {}
