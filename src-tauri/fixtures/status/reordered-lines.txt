@@ -1,0 +1,4 @@
+Reset in: 1h 30m
+Some informational line
+Remaining 64 percent
+Active model gpt-5.3-codex-spark

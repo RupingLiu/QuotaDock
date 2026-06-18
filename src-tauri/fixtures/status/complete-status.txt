@@ -1,0 +1,6 @@
+Codex status
+Model: gpt-5.5
+Usage remaining: 72%
+Reset at: 2026-06-18T07:10:00Z
+Credits balance: 12.50
+Context window: 200k tokens

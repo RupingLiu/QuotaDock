@@ -1,0 +1,6 @@
+Welcome back
+Model: gpt-5.5
+This line is not part of status
+You have 18% remaining
+Another unrelated line
+Resets at 2026-06-18 09:00 UTC

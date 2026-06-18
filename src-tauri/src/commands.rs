@@ -1,4 +1,5 @@
 use crate::models::{AppState, ManualUpdateInput, Settings, UsageSnapshot};
+use crate::status_parser::{parse_status_text as parse_status_text_impl, ParseClock, ParseResult};
 use crate::usage_store::{StoreError, UsageStore};
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
@@ -10,6 +11,11 @@ pub fn get_app_state(app: AppHandle) -> Result<AppState, String> {
         .load()
         .map(|outcome| outcome.into_app_state())
         .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn parse_status_text(raw_text: String) -> ParseResult {
+    parse_status_text_impl(&raw_text, ParseClock::now())
 }
 
 #[tauri::command]

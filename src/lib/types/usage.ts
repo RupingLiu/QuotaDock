@@ -41,6 +41,10 @@ export type UsageSnapshot = {
   notes: string;
 };
 
+export type ParseResult = {
+  snapshot: UsageSnapshot;
+};
+
 export type ManualUpdateInput = {
   remainingPercent: number | null;
   resetAt: string | null;

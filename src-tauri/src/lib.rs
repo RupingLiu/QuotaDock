@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 mod models;
+mod status_parser;
 mod usage_store;
 
 #[cfg(not(test))]
@@ -13,6 +14,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
+            commands::parse_status_text,
             commands::save_snapshot,
             commands::update_manual_fields,
             commands::update_settings,

@@ -1,0 +1,4 @@
+Codex status
+Model: gpt-5.5
+Reset in: 2h 15m
+Credits balance: 9.25
