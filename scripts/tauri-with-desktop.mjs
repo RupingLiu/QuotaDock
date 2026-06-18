@@ -9,21 +9,22 @@ const tauriArgs =
     ? [command, "--features", "desktop", ...rest]
     : args;
 
-const runner = join(
+const tauriEntry = join(
   process.cwd(),
   "node_modules",
-  ".bin",
-  process.platform === "win32" ? "tauri.cmd" : "tauri",
+  "@tauri-apps",
+  "cli",
+  "tauri.js",
 );
 
-if (!existsSync(runner)) {
+if (!existsSync(tauriEntry)) {
   console.error("Missing local Tauri CLI. Run npm install before invoking tauri.");
   process.exit(1);
 }
 
-const result = spawnSync(runner, tauriArgs, {
+const result = spawnSync(process.execPath, [tauriEntry, ...tauriArgs], {
   stdio: "inherit",
-  shell: process.platform === "win32",
+  shell: false,
 });
 
 if (result.error) {

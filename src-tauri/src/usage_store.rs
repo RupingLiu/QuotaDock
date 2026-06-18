@@ -77,16 +77,9 @@ impl UsageStore {
             file.flush()?;
             file.sync_all()?;
         }
-        match std::fs::rename(&temp_path, &self.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                std::fs::remove_file(&self.path)?;
-                std::fs::rename(&temp_path, &self.path)?;
-            }
-            Err(error) => {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(error.into());
-            }
+        if let Err(error) = atomic_replace(&temp_path, &self.path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error.into());
         }
         Ok(())
     }
@@ -227,6 +220,34 @@ fn truncate_history(history: &mut Vec<UsageSnapshot>) {
     if history.len() > DEFAULT_HISTORY_LIMIT {
         history.truncate(DEFAULT_HISTORY_LIMIT);
     }
+}
+
+#[cfg(windows)]
+fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
 }
 
 fn mutation_status(status: &StorageStatus) -> StorageStatus {
