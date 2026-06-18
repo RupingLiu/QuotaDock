@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppState, QuotaReading } from "$lib/types/usage";
-  import { formatCapturedAt, formatPercent, formatReset, sourceLabel } from "$lib/utils/format";
+  import { formatCapturedAt, formatPercent, formatReset } from "$lib/utils/format";
 
   export let appState: AppState | null;
   export let loading = false;
@@ -20,46 +20,39 @@
   $: weekly = snapshot?.weekly ?? emptyReading;
   $: statusText =
     errorMessage ??
-    (refreshing ? "正在读取 Codex 额度..." : null) ??
+    (refreshing ? "读取中..." : null) ??
     noticeMessage ??
     appState?.statusMessage ??
-    "尚未获取额度。请点击自动查询。";
-  $: sourceText = sourceLabel(snapshot?.source);
-  $: updatedAt = snapshot ? formatCapturedAt(snapshot.capturedAt) : "尚未更新";
+    "点击查询";
+  $: updatedAt = snapshot ? formatCapturedAt(snapshot.capturedAt) : "未更新";
   $: busy = loading || refreshing;
+  $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)} 更新 ${formatReset(fiveHour)}；1周 ${formatPercent(weekly.remainingPercent)} 更新 ${formatReset(weekly)}；${statusText}`;
 </script>
 
 <main class="float-shell">
-  <section class="floating-bar" aria-label="QuotaDock 额度悬浮条" data-tauri-drag-region>
-    <div class="brand" data-tauri-drag-region>
-      <span class="logo-dot" aria-hidden="true"></span>
-      <div>
-        <h1>Codex 额度</h1>
-        <p>{updatedAt}</p>
-      </div>
-    </div>
+  <section class="mini-status" aria-label="QuotaDock 右下角状态栏" title={titleText} data-tauri-drag-region>
+    <span class="logo-dot" aria-hidden="true" data-tauri-drag-region></span>
+    <h1 class="sr-only">Codex 额度</h1>
 
-    <div class="metric five" aria-label="5小时额度" data-tauri-drag-region>
-      <span>5小时额度</span>
+    <div class="quota five" aria-label="5小时额度" data-tauri-drag-region>
+      <span class="sr-only">5小时额度</span>
+      <span class="label" aria-hidden="true">5H</span>
       <strong data-testid="five-hour-value">{formatPercent(fiveHour.remainingPercent)}</strong>
-      <small>更新 {formatReset(fiveHour)}</small>
     </div>
 
-    <div class="divider" aria-hidden="true"></div>
-
-    <div class="metric week" aria-label="1周额度" data-tauri-drag-region>
-      <span>1周额度</span>
+    <div class="quota week" aria-label="1周额度" data-tauri-drag-region>
+      <span class="sr-only">1周额度</span>
+      <span class="label" aria-hidden="true">1W</span>
       <strong data-testid="weekly-value">{formatPercent(weekly.remainingPercent)}</strong>
-      <small>更新 {formatReset(weekly)}</small>
     </div>
 
-    <div class="status" data-tauri-drag-region>
-      <span class="source">{sourceText}</span>
-      <span class:error={Boolean(errorMessage)} data-testid="status-message">{statusText}</span>
-    </div>
+    <span class:error={Boolean(errorMessage)} class="meta" data-testid="status-message" data-tauri-drag-region>
+      {refreshing ? "查询中" : snapshot ? updatedAt : statusText}
+    </span>
 
-    <button type="button" disabled={busy} on:click={onRefresh}>
-      {refreshing ? "查询中" : "自动查询"}
+    <button type="button" disabled={busy} on:click={onRefresh} aria-label="自动查询" title="自动查询">
+      <span aria-hidden="true">{refreshing ? "..." : "↻"}</span>
+      <span class="sr-only">自动查询</span>
     </button>
   </section>
 </main>
@@ -77,7 +70,7 @@
     height: 100%;
     margin: 0;
     overflow: hidden;
-    color: #182536;
+    color: #27384a;
     background: transparent;
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
@@ -98,157 +91,97 @@
     height: 100%;
     display: grid;
     place-items: center;
-    padding: 8px;
+    padding: 4px;
     overflow: hidden;
     background: transparent;
   }
 
-  .floating-bar {
+  .mini-status {
     width: 100%;
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-columns: 142px minmax(118px, 1fr) 1px minmax(118px, 1fr) minmax(150px, 1.05fr) 96px;
+    grid-template-columns: 30px minmax(64px, 1fr) minmax(64px, 1fr) minmax(46px, 0.72fr) 32px;
     align-items: center;
-    gap: 14px;
-    padding: 10px 14px;
-    border: 1px solid rgba(75, 92, 106, 0.16);
-    border-radius: 18px;
-    background: rgba(248, 247, 243, 0.96);
+    gap: 6px;
+    padding: 5px 6px;
+    border: 1px solid rgba(93, 107, 120, 0.18);
+    border-radius: 999px;
+    background: rgba(248, 247, 243, 0.92);
     box-shadow:
-      0 18px 44px rgba(43, 55, 70, 0.22),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9);
-    backdrop-filter: blur(18px);
-  }
-
-  .brand {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+      0 10px 28px rgba(37, 48, 62, 0.18),
+      inset 0 1px 0 rgba(255, 255, 255, 0.86);
+    backdrop-filter: blur(16px) saturate(1.2);
   }
 
   .logo-dot {
-    width: 30px;
-    height: 30px;
-    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
     border-radius: 10px;
     background:
-      radial-gradient(circle at 62% 34%, #ffffff 0 16%, transparent 17%),
-      linear-gradient(135deg, #75a9bd 0%, #385b76 54%, #c8b081 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+      radial-gradient(circle at 62% 34%, #ffffff 0 15%, transparent 16%),
+      linear-gradient(135deg, #82aebb 0%, #3c5f78 56%, #c7ad7b 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.64);
   }
 
-  h1,
-  p {
-    margin: 0;
-  }
-
-  h1 {
-    color: #102033;
-    font-size: 0.94rem;
-    line-height: 1.18;
-    font-weight: 780;
-    white-space: nowrap;
-  }
-
-  .brand p,
-  .metric small,
-  .status span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .brand p {
-    margin-top: 3px;
-    color: #6f7680;
-    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.68rem;
-    font-weight: 700;
-  }
-
-  .metric {
+  .quota {
     min-width: 0;
-    display: grid;
-    grid-template-columns: auto 1fr;
-    column-gap: 8px;
-    row-gap: 3px;
+    display: flex;
     align-items: baseline;
-  }
-
-  .metric span {
-    color: #59636f;
-    font-size: 0.76rem;
+    justify-content: center;
+    gap: 4px;
     white-space: nowrap;
   }
 
-  .metric strong {
+  .label {
+    color: #7b858e;
+    font-size: 0.62rem;
+    font-weight: 760;
+  }
+
+  strong {
     color: #345a75;
     font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
-    font-size: 2.05rem;
+    font-size: 1.12rem;
     font-variant-numeric: tabular-nums;
-    font-weight: 780;
+    font-weight: 820;
     line-height: 1;
-    justify-self: end;
   }
 
   .week strong {
-    color: #7b6651;
+    color: #7d6a54;
   }
 
-  .metric small {
-    grid-column: 1 / -1;
-    color: #7b7469;
-    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.68rem;
-    font-weight: 700;
-  }
-
-  .divider {
-    width: 1px;
-    height: 42px;
-    background: rgba(75, 92, 106, 0.14);
-  }
-
-  .status {
+  .meta {
     min-width: 0;
-    display: grid;
-    gap: 4px;
-  }
-
-  .source {
-    width: max-content;
-    max-width: 100%;
-    border-radius: 999px;
-    padding: 2px 8px;
-    color: #4d6172;
-    background: rgba(255, 255, 255, 0.72);
-    box-shadow: inset 0 0 0 1px rgba(75, 92, 106, 0.12);
-    font-size: 0.68rem;
-  }
-
-  .status span:last-child {
-    color: #69747d;
-    font-size: 0.72rem;
-  }
-
-  .status span.error {
-    color: #9a5c46;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #6d7680;
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+    font-size: 0.58rem;
     font-weight: 700;
+    text-align: center;
+  }
+
+  .meta.error {
+    color: #9a5c46;
   }
 
   button {
-    min-height: 42px;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
     border: 0;
     border-radius: 999px;
-    padding: 0 14px;
     color: #fffaf0;
     background: #345a75;
     cursor: pointer;
-    font-size: 0.88rem;
-    font-weight: 760;
-    box-shadow: 0 9px 18px rgba(52, 90, 117, 0.22);
+    font-size: 1rem;
+    font-weight: 820;
+    line-height: 1;
+    box-shadow: 0 6px 14px rgba(52, 90, 117, 0.22);
   }
 
   button:disabled {
@@ -257,7 +190,21 @@
   }
 
   button:focus-visible {
-    outline: 3px solid rgba(126, 163, 181, 0.44);
-    outline-offset: 3px;
+    outline: 3px solid rgba(126, 163, 181, 0.42);
+    outline-offset: 2px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>
+
+

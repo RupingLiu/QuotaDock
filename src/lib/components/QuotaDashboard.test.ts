@@ -71,7 +71,7 @@ describe("QuotaDashboard", () => {
       },
     });
 
-    await fireEvent.click(screen.getByText("自动查询"));
+    await fireEvent.click(screen.getByLabelText("自动查询"));
 
     expect(onRefresh).toHaveBeenCalled();
     expect(screen.queryByText("粘贴 /status 更新")).toBeNull();
@@ -80,3 +80,4 @@ describe("QuotaDashboard", () => {
     expect(screen.queryByLabelText("粘贴 /status 内容")).toBeNull();
   });
 });
+

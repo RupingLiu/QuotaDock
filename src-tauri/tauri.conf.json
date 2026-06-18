@@ -15,8 +15,8 @@
     "windows": [
       {
         "title": "QuotaDock",
-        "width": 760,
-        "height": 96,
+        "width": 320,
+        "height": 46,
         "resizable": false,
         "maximizable": false,
         "decorations": false,
@@ -51,3 +51,4 @@
     ]
   }
 }
+
