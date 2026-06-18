@@ -1,13 +1,6 @@
 <script lang="ts">
   import type { AppState, QuotaReading } from "$lib/types/usage";
-  import {
-    formatCapturedAt,
-    formatPercent,
-    formatReset,
-    progressValue,
-    sourceLabel,
-    storageLabel,
-  } from "$lib/utils/format";
+  import { formatCapturedAt, formatPercent, formatReset, sourceLabel } from "$lib/utils/format";
 
   export let appState: AppState | null;
   export let loading = false;
@@ -32,93 +25,60 @@
     appState?.statusMessage ??
     "尚未获取额度。请点击自动查询。";
   $: sourceText = sourceLabel(snapshot?.source);
-  $: storageText = storageLabel(appState?.storageStatus);
   $: updatedAt = snapshot ? formatCapturedAt(snapshot.capturedAt) : "尚未更新";
   $: busy = loading || refreshing;
-
-  function progressStyle(reading: QuotaReading): string {
-    return `--progress: ${progressValue(reading.remainingPercent)}%;`;
-  }
 </script>
 
-<main class="shell">
-  <section class="window" aria-label="QuotaDock 额度监控">
-    <aside class="sidebar">
+<main class="float-shell">
+  <section class="floating-bar" aria-label="QuotaDock 额度悬浮条" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <span class="logo-dot" aria-hidden="true"></span>
       <div>
-        <p class="eyebrow">QuotaDock</p>
         <h1>Codex 额度</h1>
-        <p class="summary">
-          最后更新
-          <strong>{updatedAt}</strong>
-        </p>
+        <p>{updatedAt}</p>
       </div>
+    </div>
 
-      <div class="sidebar-bottom">
-        <div class="badges" aria-label="当前状态">
-          <span>{sourceText}</span>
-          <span>{storageText}</span>
-        </div>
-        <button class="primary" type="button" disabled={busy} on:click={onRefresh}>
-          {refreshing ? "查询中" : "自动查询"}
-        </button>
-      </div>
-    </aside>
+    <div class="metric five" aria-label="5小时额度" data-tauri-drag-region>
+      <span>5小时额度</span>
+      <strong data-testid="five-hour-value">{formatPercent(fiveHour.remainingPercent)}</strong>
+      <small>更新 {formatReset(fiveHour)}</small>
+    </div>
 
-    <section class="content" aria-label="额度详情">
-      <div class="quota-list" data-testid="quota-grid">
-        <article class="quota-line five" aria-label="5小时额度">
-          <div class="quota-copy">
-            <div class="line-head">
-              <span>5小时额度</span>
-              <b>下次更新 {formatReset(fiveHour)}</b>
-            </div>
-            <div class="track" aria-hidden="true">
-              <span style={progressStyle(fiveHour)}></span>
-            </div>
-          </div>
-          <strong class="quota-value" data-testid="five-hour-value">
-            {formatPercent(fiveHour.remainingPercent)}
-          </strong>
-        </article>
+    <div class="divider" aria-hidden="true"></div>
 
-        <article class="quota-line week" aria-label="1周额度">
-          <div class="quota-copy">
-            <div class="line-head">
-              <span>1周额度</span>
-              <b>下次更新 {formatReset(weekly)}</b>
-            </div>
-            <div class="track" aria-hidden="true">
-              <span style={progressStyle(weekly)}></span>
-            </div>
-          </div>
-          <strong class="quota-value" data-testid="weekly-value">
-            {formatPercent(weekly.remainingPercent)}
-          </strong>
-        </article>
-      </div>
+    <div class="metric week" aria-label="1周额度" data-tauri-drag-region>
+      <span>1周额度</span>
+      <strong data-testid="weekly-value">{formatPercent(weekly.remainingPercent)}</strong>
+      <small>更新 {formatReset(weekly)}</small>
+    </div>
 
-      <div class="status-row">
-        <span class:error={Boolean(errorMessage)} data-testid="status-message">{statusText}</span>
-      </div>
-    </section>
+    <div class="status" data-tauri-drag-region>
+      <span class="source">{sourceText}</span>
+      <span class:error={Boolean(errorMessage)} data-testid="status-message">{statusText}</span>
+    </div>
+
+    <button type="button" disabled={busy} on:click={onRefresh}>
+      {refreshing ? "查询中" : "自动查询"}
+    </button>
   </section>
 </main>
 
 <style>
   :global(html) {
-    min-width: 320px;
+    width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #f6f4ef;
+    background: transparent;
   }
 
   :global(body) {
-    margin: 0;
-    min-width: 320px;
+    width: 100%;
     height: 100%;
+    margin: 0;
     overflow: hidden;
-    color: #16212c;
-    background: #f6f4ef;
+    color: #182536;
+    background: transparent;
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
       "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
@@ -133,108 +93,162 @@
     font: inherit;
   }
 
-  .shell {
-    height: 100vh;
-    min-height: 420px;
-    overflow: hidden;
-    background: #f6f4ef;
-  }
-
-  .window {
+  .float-shell {
     width: 100%;
     height: 100%;
-    min-height: 0;
     display: grid;
-    grid-template-columns: clamp(218px, 24vw, 292px) minmax(0, 1fr);
-    gap: 0;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: #f6f4ef;
-    box-shadow: none;
+    place-items: center;
+    padding: 8px;
+    overflow: hidden;
+    background: transparent;
   }
 
-  .sidebar {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    gap: 24px;
+  .floating-bar {
+    width: 100%;
+    height: 100%;
     min-width: 0;
-    padding: 34px 28px 30px;
-    border-right: 1px solid rgba(111, 103, 88, 0.18);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent 58%),
-      #f1eee7;
+    display: grid;
+    grid-template-columns: 142px minmax(118px, 1fr) 1px minmax(118px, 1fr) minmax(150px, 1.05fr) 96px;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 14px;
+    border: 1px solid rgba(75, 92, 106, 0.16);
+    border-radius: 18px;
+    background: rgba(248, 247, 243, 0.96);
+    box-shadow:
+      0 18px 44px rgba(43, 55, 70, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(18px);
   }
 
-  .eyebrow,
+  .brand {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-dot {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    border-radius: 10px;
+    background:
+      radial-gradient(circle at 62% 34%, #ffffff 0 16%, transparent 17%),
+      linear-gradient(135deg, #75a9bd 0%, #385b76 54%, #c8b081 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+  }
+
   h1,
-  .summary {
+  p {
     margin: 0;
   }
 
-  .eyebrow {
-    color: #7c7569;
-    font-size: 0.78rem;
-    font-weight: 650;
-  }
-
   h1 {
-    margin-top: 6px;
-    color: #12202c;
-    font-size: 1.5rem;
+    color: #102033;
+    font-size: 0.94rem;
     line-height: 1.18;
     font-weight: 780;
+    white-space: nowrap;
   }
 
-  .summary {
-    margin-top: 12px;
-    display: grid;
-    gap: 2px;
-    color: #7c7569;
-    font-size: 0.78rem;
-    line-height: 1.45;
+  .brand p,
+  .metric small,
+  .status span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .summary strong {
-    color: #334e68;
+  .brand p {
+    margin-top: 3px;
+    color: #6f7680;
     font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+    font-size: 0.68rem;
     font-weight: 700;
   }
 
-  .sidebar-bottom {
+  .metric {
+    min-width: 0;
     display: grid;
-    gap: 14px;
+    grid-template-columns: auto 1fr;
+    column-gap: 8px;
+    row-gap: 3px;
+    align-items: baseline;
   }
 
-  .badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
+  .metric span {
+    color: #59636f;
+    font-size: 0.76rem;
+    white-space: nowrap;
   }
 
-  .badges span {
-    min-height: 24px;
-    display: inline-flex;
-    align-items: center;
+  .metric strong {
+    color: #345a75;
+    font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-size: 2.05rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 780;
+    line-height: 1;
+    justify-self: end;
+  }
+
+  .week strong {
+    color: #7b6651;
+  }
+
+  .metric small {
+    grid-column: 1 / -1;
+    color: #7b7469;
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+    font-size: 0.68rem;
+    font-weight: 700;
+  }
+
+  .divider {
+    width: 1px;
+    height: 42px;
+    background: rgba(75, 92, 106, 0.14);
+  }
+
+  .status {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .source {
+    width: max-content;
+    max-width: 100%;
     border-radius: 999px;
-    padding: 0 9px;
-    color: #596777;
-    background: rgba(255, 255, 255, 0.66);
+    padding: 2px 8px;
+    color: #4d6172;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: inset 0 0 0 1px rgba(75, 92, 106, 0.12);
+    font-size: 0.68rem;
+  }
+
+  .status span:last-child {
+    color: #69747d;
     font-size: 0.72rem;
-    box-shadow: inset 0 0 0 1px rgba(92, 103, 113, 0.1);
+  }
+
+  .status span.error {
+    color: #9a5c46;
+    font-weight: 700;
   }
 
   button {
-    min-height: 40px;
+    min-height: 42px;
     border: 0;
     border-radius: 999px;
-    padding: 0 20px;
+    padding: 0 14px;
     color: #fffaf0;
-    background: #334e68;
+    background: #345a75;
     cursor: pointer;
+    font-size: 0.88rem;
     font-weight: 760;
-    box-shadow: 0 8px 18px rgba(51, 78, 104, 0.18);
+    box-shadow: 0 9px 18px rgba(52, 90, 117, 0.22);
   }
 
   button:disabled {
@@ -245,153 +259,5 @@
   button:focus-visible {
     outline: 3px solid rgba(126, 163, 181, 0.44);
     outline-offset: 3px;
-  }
-
-  .content {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 26px;
-    min-width: 0;
-    min-height: 0;
-    padding: clamp(28px, 5vw, 62px) clamp(32px, 6vw, 72px) 34px;
-  }
-
-  .quota-list {
-    display: grid;
-    width: min(1080px, 100%);
-    min-height: 0;
-  }
-
-  .quota-line {
-    display: grid;
-    grid-template-columns: minmax(180px, 1fr) auto;
-    align-items: center;
-    gap: clamp(22px, 4vw, 54px);
-    min-height: 190px;
-    padding-block: 28px;
-    border-bottom: 1px solid rgba(111, 103, 88, 0.16);
-  }
-
-  .quota-line:first-child {
-    border-top: 0;
-  }
-
-  .quota-copy {
-    min-width: 0;
-  }
-
-  .line-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 14px;
-    margin-bottom: 16px;
-  }
-
-  .line-head span {
-    color: #53606c;
-    font-size: 0.88rem;
-  }
-
-  .line-head b {
-    color: #7c7569;
-    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.78rem;
-    font-weight: 700;
-    white-space: nowrap;
-  }
-
-  .quota-value {
-    color: #334e68;
-    font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
-    font-size: clamp(4.2rem, 9vw, 6.8rem);
-    font-variant-numeric: tabular-nums;
-    font-weight: 760;
-    line-height: 1;
-  }
-
-  .week .quota-value {
-    color: #7b6651;
-  }
-
-  .track {
-    height: 7px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: rgba(77, 89, 101, 0.12);
-  }
-
-  .track span {
-    display: block;
-    width: var(--progress);
-    height: 100%;
-    border-radius: inherit;
-    background: #7ea3b5;
-  }
-
-  .week .track span {
-    background: #c3aa84;
-  }
-
-  .status-row {
-    width: min(1080px, 100%);
-    min-height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    color: #68727c;
-    font-size: 0.8rem;
-  }
-
-  .status-row span.error {
-    color: #9a5c46;
-    font-weight: 650;
-  }
-
-  @media (max-width: 720px) {
-    :global(html),
-    :global(body) {
-      overflow: auto;
-    }
-
-    .shell {
-      height: auto;
-      min-height: 100vh;
-      overflow: visible;
-    }
-
-    .window {
-      grid-template-columns: 1fr;
-      gap: 22px;
-      min-height: 100vh;
-    }
-
-    .sidebar {
-      padding: 22px;
-      border-right: 0;
-      border-bottom: 1px solid rgba(111, 103, 88, 0.18);
-    }
-
-    .content {
-      padding: 0 22px 24px;
-    }
-
-    .quota-line {
-      grid-template-columns: 1fr;
-      gap: 12px;
-      min-height: 142px;
-      padding-block: 18px;
-    }
-
-    .line-head {
-      display: grid;
-      gap: 4px;
-      margin-bottom: 12px;
-    }
-
-    .quota-value {
-      font-size: 3.8rem;
-    }
   }
 </style>

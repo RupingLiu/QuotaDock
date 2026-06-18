@@ -3,8 +3,9 @@
 mod models;
 mod status_parser;
 #[cfg(feature = "desktop")]
+mod floating_bar;
+#[cfg(feature = "desktop")]
 mod tray;
-mod tray_icon;
 mod usage_store;
 
 #[cfg(not(test))]
@@ -20,6 +21,7 @@ pub fn run() {
         if let Ok(state) = commands::load_app_state(app.handle()) {
             tray::sync_from_app_state(app.handle(), &state);
         }
+        floating_bar::position_main_window(app.handle());
         commands::prewarm_codex_status_session();
         Ok(())
     });

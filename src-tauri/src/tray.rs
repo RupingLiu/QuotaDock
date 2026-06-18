@@ -1,5 +1,5 @@
-use crate::models::{AppState, QuotaReading, QuotaSnapshot};
-use crate::tray_icon::render_quota_icon_rgba;
+use crate::floating_bar;
+use crate::models::AppState;
 use tauri::image::Image;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -7,7 +7,6 @@ use tauri::{App, AppHandle, Manager, Wry};
 
 const MENU_SHOW: &str = "show";
 const MENU_QUIT: &str = "quit";
-const TRAY_SIZE: u32 = 64;
 
 pub struct TrayState {
     icon: TrayIcon<Wry>,
@@ -21,19 +20,15 @@ pub fn install(app: &App) -> tauri::Result<()> {
         .text(MENU_QUIT, "退出")
         .build()?;
 
-    let icon = quota_icon_image(None, TRAY_SIZE).unwrap_or_else(|_| {
-        app.default_window_icon().cloned().unwrap_or_else(|| {
-            Image::new_owned(
-                vec![0; (TRAY_SIZE * TRAY_SIZE * 4) as usize],
-                TRAY_SIZE,
-                TRAY_SIZE,
-            )
-        })
-    });
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .map(Image::to_owned)
+        .unwrap_or_else(transparent_fallback_icon);
 
     let tray = TrayIconBuilder::with_id("quotadock")
         .menu(&menu)
-        .tooltip("QuotaDock：尚未获取额度")
+        .tooltip("QuotaDock")
         .show_menu_on_left_click(false)
         .icon(icon)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -62,13 +57,9 @@ pub fn install(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn sync_from_app_state(app: &AppHandle, state: &AppState) {
-    let snapshot = state.latest_snapshot.as_ref();
+pub fn sync_from_app_state(app: &AppHandle, _state: &AppState) {
     if let Some(tray) = app.try_state::<TrayState>() {
-        if let Ok(icon) = quota_icon_image(snapshot, TRAY_SIZE) {
-            let _ = tray.icon.set_icon(Some(icon));
-        }
-        let _ = tray.icon.set_tooltip(Some(tray_tooltip(snapshot)));
+        let _ = tray.icon.set_tooltip(Some("QuotaDock"));
     }
 }
 
@@ -76,33 +67,12 @@ pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
+        floating_bar::position_main_window(app);
         let _ = window.set_focus();
     }
 }
 
-fn quota_icon_image(snapshot: Option<&QuotaSnapshot>, size: u32) -> Result<Image<'static>, String> {
-    Ok(Image::new_owned(
-        render_quota_icon_rgba(snapshot, size)?,
-        size,
-        size,
-    ))
-}
-
-fn tray_tooltip(snapshot: Option<&QuotaSnapshot>) -> String {
-    let Some(snapshot) = snapshot else {
-        return "QuotaDock --".to_string();
-    };
-
-    format!(
-        "5H {} | 1W {}",
-        tooltip_percent(&snapshot.five_hour),
-        tooltip_percent(&snapshot.weekly)
-    )
-}
-
-fn tooltip_percent(reading: &QuotaReading) -> String {
-    reading
-        .remaining_percent
-        .map(|value| format!("{value}%"))
-        .unwrap_or_else(|| "--".to_string())
+fn transparent_fallback_icon() -> Image<'static> {
+    const SIZE: u32 = 32;
+    Image::new_owned(vec![0; (SIZE * SIZE * 4) as usize], SIZE, SIZE)
 }
