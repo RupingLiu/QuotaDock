@@ -20,10 +20,22 @@ pub fn run() {
         if let Ok(state) = commands::load_app_state(app.handle()) {
             tray::sync_from_app_state(app.handle(), &state);
         }
+        commands::prewarm_codex_status_session();
         Ok(())
     });
 
     builder
+        .on_window_event(|window, event| {
+            #[cfg(feature = "desktop")]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            #[cfg(not(feature = "desktop"))]
+            let _ = (window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
             commands::refresh_usage,

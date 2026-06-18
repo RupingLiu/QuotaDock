@@ -90,15 +90,13 @@ fn quota_icon_image(snapshot: Option<&QuotaSnapshot>, size: u32) -> Result<Image
 
 fn tray_tooltip(snapshot: Option<&QuotaSnapshot>) -> String {
     let Some(snapshot) = snapshot else {
-        return "QuotaDock：尚未获取额度".to_string();
+        return "QuotaDock --".to_string();
     };
 
     format!(
-        "5小时：{}，更新 {}；1周：{}，更新 {}",
+        "5H {} | 1W {}",
         tooltip_percent(&snapshot.five_hour),
-        tooltip_reset(&snapshot.five_hour),
-        tooltip_percent(&snapshot.weekly),
-        tooltip_reset(&snapshot.weekly)
+        tooltip_percent(&snapshot.weekly)
     )
 }
 
@@ -107,27 +105,4 @@ fn tooltip_percent(reading: &QuotaReading) -> String {
         .remaining_percent
         .map(|value| format!("{value}%"))
         .unwrap_or_else(|| "--".to_string())
-}
-
-fn tooltip_reset(reading: &QuotaReading) -> String {
-    if let Some(reset_at) = &reading.reset_at {
-        return reset_at.clone();
-    }
-    reading
-        .reset_countdown_seconds
-        .map(format_duration_zh)
-        .unwrap_or_else(|| "--".to_string())
-}
-
-fn format_duration_zh(seconds: i64) -> String {
-    let minutes = seconds.max(0) / 60;
-    let hours = minutes / 60;
-    let remaining_minutes = minutes % 60;
-    if hours > 0 && remaining_minutes > 0 {
-        format!("{hours}小时{remaining_minutes}分钟后")
-    } else if hours > 0 {
-        format!("{hours}小时后")
-    } else {
-        format!("{remaining_minutes}分钟后")
-    }
 }

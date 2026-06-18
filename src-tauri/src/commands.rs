@@ -94,26 +94,15 @@ pub fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
-    let help = run_codex(&["--help"], Duration::from_secs(3))?;
-    if !help.success {
-        return Err("Codex CLI 无法执行，请确认 codex 已安装并可登录。".to_string());
-    }
-
-    let output = if command_list_contains(&help.stdout, "usage") {
-        let output = run_codex(&["usage", "--json"], Duration::from_secs(8))?;
-        if !output.success {
-            return Err("Codex CLI 额度查询失败，请粘贴 /status。".to_string());
-        }
-        output.stdout
-    } else if command_list_contains(&help.stdout, "status") {
-        let output = run_codex(&["status", "--json"], Duration::from_secs(8))?;
-        if !output.success {
-            return Err("Codex CLI 额度查询失败，请粘贴 /status。".to_string());
-        }
-        output.stdout
-    } else {
-        run_codex_status_pty(Duration::from_secs(75))?
-    };
+    let output = run_codex_status_pty(Duration::from_secs(45)).or_else(|pty_error| {
+        fetch_usage_from_structured_cli().map_err(|structured_error| {
+            if structured_error.contains("未找到 Codex CLI") {
+                structured_error
+            } else {
+                pty_error
+            }
+        })
+    })?;
 
     let mut result =
         parse_status_text_with_source(&output, ParseClock::now(), SnapshotSource::CodexCli);
@@ -123,6 +112,28 @@ fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
         Ok(result.snapshot)
     } else {
         Err("Codex CLI 没有返回可识别的额度，请粘贴 /status。".to_string())
+    }
+}
+
+fn fetch_usage_from_structured_cli() -> Result<String, String> {
+    let help = run_codex(&["--help"], Duration::from_secs(3))?;
+    if !help.success {
+        return Err("Codex CLI 无法执行，请确认 codex 已安装并可登录。".to_string());
+    }
+
+    let args = if command_list_contains(&help.stdout, "usage") {
+        ["usage", "--json"]
+    } else if command_list_contains(&help.stdout, "status") {
+        ["status", "--json"]
+    } else {
+        return Err("Codex CLI 未提供结构化额度查询。".to_string());
+    };
+
+    let output = run_codex(&args, Duration::from_secs(8))?;
+    if output.success {
+        Ok(output.stdout)
+    } else {
+        Err("Codex CLI 额度查询失败，请粘贴 /status。".to_string())
     }
 }
 
@@ -149,15 +160,28 @@ pub(crate) fn probe_codex_status_output(timeout: Duration) -> Result<String, Str
     run_codex_status_pty(timeout)
 }
 
+#[allow(dead_code)]
+pub fn prewarm_codex_status_session() {
+    let Some(target) = find_codex_binary() else {
+        return;
+    };
+
+    #[cfg(windows)]
+    windows_conpty::prewarm_status_session(target);
+}
+
 #[cfg(windows)]
 mod windows_conpty {
-    use super::{codex_status_output_ready, is_cmd_shim, should_send_status_command};
+    use super::{
+        codex_prompt_ready, codex_status_output_ready, is_cmd_shim, should_send_status_command,
+    };
     use std::ffi::{c_void, OsStr};
+    use std::io::{Read, Write};
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::ptr::{null, null_mut};
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Mutex, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{
@@ -179,9 +203,215 @@ mod windows_conpty {
     const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
     const PSEUDOCONSOLE_WIN32_INPUT_MODE: u32 = 0x4;
     const PSEUDOCONSOLE_INHERIT_CURSOR: u32 = 0x1;
+    static STATUS_SESSION: OnceLock<Mutex<Option<CodexPtySession>>> = OnceLock::new();
 
     pub fn capture_status(target: &Path, timeout: Duration) -> Result<String, String> {
-        capture_status_with_portable_pty(target, timeout)
+        if std::env::var_os("QUOTADOCK_STATUS_PROBE_COMMAND").is_some() {
+            return capture_status_with_portable_pty(target, timeout);
+        }
+
+        match capture_status_with_cached_session(target, timeout) {
+            Ok(output) => Ok(output),
+            Err(error) => {
+                clear_cached_session();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn prewarm_status_session(target: PathBuf) {
+        thread::spawn(move || {
+            let _ = with_cached_session(&target, |session| session.warm(Duration::from_secs(3)));
+        });
+    }
+
+    fn capture_status_with_cached_session(
+        target: &Path,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        with_cached_session(target, |session| session.query(timeout))
+    }
+
+    fn with_cached_session<T>(
+        target: &Path,
+        action: impl FnOnce(&mut CodexPtySession) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let state = STATUS_SESSION.get_or_init(|| Mutex::new(None));
+        let mut guard = state
+            .lock()
+            .map_err(|_| "Codex CLI 查询状态被占用，请稍后重试。".to_string())?;
+        if guard.as_mut().is_none_or(CodexPtySession::has_exited) {
+            *guard = Some(CodexPtySession::start(target)?);
+        }
+        action(guard.as_mut().expect("session exists after start"))
+    }
+
+    fn clear_cached_session() {
+        if let Some(state) = STATUS_SESSION.get() {
+            if let Ok(mut guard) = state.lock() {
+                *guard = None;
+            }
+        }
+    }
+
+    struct CodexPtySession {
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        _master: Box<dyn portable_pty::MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        receiver: mpsc::Receiver<Vec<u8>>,
+        output: Vec<u8>,
+        cursor_reported: bool,
+    }
+
+    impl CodexPtySession {
+        fn start(target: &Path) -> Result<Self, String> {
+            use portable_pty::{native_pty_system, PtySize};
+
+            let pty_system = native_pty_system();
+            let pair = pty_system
+                .openpty(PtySize {
+                    rows: 30,
+                    cols: 100,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|error| format!("创建 Codex 伪终端失败：{error}"))?;
+
+            let mut command = portable_command(target);
+            if let Some(cwd) = user_profile_path() {
+                command.cwd(cwd);
+            }
+            let child = pair
+                .slave
+                .spawn_command(command)
+                .map_err(|error| format!("启动 Codex CLI 失败：{error}"))?;
+            drop(pair.slave);
+
+            let mut reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(|error| format!("读取 Codex 伪终端失败：{error}"))?;
+            let writer = pair
+                .master
+                .take_writer()
+                .map_err(|error| format!("打开 Codex 输入通道失败：{error}"))?;
+            let (sender, receiver) = mpsc::channel();
+            thread::spawn(move || {
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            if sender.send(buffer[..read].to_vec()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+
+            Ok(Self {
+                child,
+                _master: pair.master,
+                writer,
+                receiver,
+                output: Vec::new(),
+                cursor_reported: false,
+            })
+        }
+
+        fn warm(&mut self, timeout: Duration) -> Result<(), String> {
+            let started = Instant::now();
+            loop {
+                self.drain();
+                self.respond_to_cursor_query()?;
+                if codex_prompt_ready(&self.text()) || started.elapsed() >= timeout {
+                    return Ok(());
+                }
+                if self.has_exited() {
+                    return Err("Codex CLI 预热失败，请稍后重试。".to_string());
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        fn query(&mut self, timeout: Duration) -> Result<String, String> {
+            self.drain();
+            self.respond_to_cursor_query()?;
+            self.output.clear();
+            self.send_status()?;
+
+            let started = Instant::now();
+            let mut sent_count = 1_u8;
+            let mut last_sent = started;
+
+            loop {
+                self.drain();
+                self.respond_to_cursor_query()?;
+                let text = self.text();
+
+                if codex_status_output_ready(&text) {
+                    return Ok(text);
+                }
+
+                if should_send_status_command(
+                    &text,
+                    started,
+                    last_sent,
+                    sent_count,
+                    self.cursor_reported,
+                ) {
+                    self.send_status()?;
+                    sent_count += 1;
+                    last_sent = Instant::now();
+                }
+
+                if self.has_exited() {
+                    return Err("Codex CLI /status 自动查询失败，请粘贴 /status。".to_string());
+                }
+                if started.elapsed() > timeout {
+                    return Err("Codex CLI 查询超时，请粘贴 /status。".to_string());
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        fn has_exited(&mut self) -> bool {
+            matches!(self.child.try_wait(), Ok(Some(_)) | Err(_))
+        }
+
+        fn drain(&mut self) {
+            while let Ok(chunk) = self.receiver.try_recv() {
+                self.output.extend_from_slice(&chunk);
+            }
+        }
+
+        fn respond_to_cursor_query(&mut self) -> Result<(), String> {
+            if self.cursor_reported || !self.text().contains("\u{1b}[6n") {
+                return Ok(());
+            }
+            self.writer
+                .write_all(b"\x1b[1;1R")
+                .map_err(|error| format!("回应 Codex 终端查询失败：{error}"))?;
+            self.writer
+                .flush()
+                .map_err(|error| format!("回应 Codex 终端查询失败：{error}"))?;
+            self.cursor_reported = true;
+            Ok(())
+        }
+
+        fn send_status(&mut self) -> Result<(), String> {
+            self.writer
+                .write_all(b"/status\r\n")
+                .map_err(|error| format!("发送 /status 失败：{error}"))?;
+            self.writer
+                .flush()
+                .map_err(|error| format!("发送 /status 失败：{error}"))
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.output).to_string()
+        }
     }
 
     fn capture_status_with_portable_pty(
@@ -189,7 +419,6 @@ mod windows_conpty {
         timeout: Duration,
     ) -> Result<String, String> {
         use portable_pty::{native_pty_system, PtySize};
-        use std::io::{Read, Write};
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -270,7 +499,13 @@ mod windows_conpty {
 
         let started = Instant::now();
         let mut output = Vec::new();
-        let mut sent_count = 0_u8;
+        writer
+            .write_all(b"/status\r\n")
+            .map_err(|error| format!("发送 /status 失败：{error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("发送 /status 失败：{error}"))?;
+        let mut sent_count = 1_u8;
         let mut last_sent = started;
         let mut cursor_reported = false;
 
@@ -279,7 +514,7 @@ mod windows_conpty {
             let text = String::from_utf8_lossy(&output).to_string();
             respond_to_cursor_query(&mut writer, &text, &mut cursor_reported)?;
 
-            if should_send_status_command(&text, started, last_sent, sent_count) {
+            if should_send_status_command(&text, started, last_sent, sent_count, cursor_reported) {
                 writer
                     .write_all(b"/status\r\n")
                     .map_err(|error| format!("发送 /status 失败：{error}"))?;
@@ -484,7 +719,7 @@ mod windows_conpty {
                 reader.drain(&mut output);
                 let text = String::from_utf8_lossy(&output).to_string();
 
-                if should_send_status_command(&text, started, last_sent, sent_count) {
+                if should_send_status_command(&text, started, last_sent, sent_count, false) {
                     write_all(input_write.raw(), b"/status\r")?;
                     sent_count += 1;
                     last_sent = Instant::now();
@@ -879,14 +1114,17 @@ fn should_send_status_command(
     started: Instant,
     last_sent: Instant,
     sent_count: u8,
+    terminal_ready: bool,
 ) -> bool {
-    if sent_count >= 8 {
+    if sent_count >= 6 {
         return false;
     }
     if sent_count == 0 {
-        return started.elapsed() >= Duration::from_millis(1800) || codex_prompt_ready(output);
+        return terminal_ready
+            || started.elapsed() >= Duration::from_millis(250)
+            || codex_prompt_ready(output);
     }
-    last_sent.elapsed() >= Duration::from_secs(5)
+    last_sent.elapsed() >= Duration::from_secs(1)
 }
 
 fn codex_prompt_ready(output: &str) -> bool {
