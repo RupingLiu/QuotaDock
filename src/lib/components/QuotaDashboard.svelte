@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { tauriApi } from "$lib/api/tauri";
   import type { AppState, QuotaReading } from "$lib/types/usage";
   import { formatPercent, formatReset } from "$lib/utils/format";
 
@@ -122,12 +123,18 @@
     void preloadTauriWindow();
   }
 
+  function showContextMenu(event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    void tauriApi.showDashboardContextMenu(event.clientX, event.clientY);
+  }
+
   function hasTauriRuntime(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   }
 </script>
 
-<main class="float-shell" on:contextmenu|preventDefault>
+<main class="float-shell" on:contextmenu={showContextMenu}>
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <section
     class:error={Boolean(errorMessage)}

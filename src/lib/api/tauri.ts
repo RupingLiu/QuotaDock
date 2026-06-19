@@ -4,6 +4,7 @@ import type { AppState, RefreshUsageResult } from "$lib/types/usage";
 export type QuotaDockApi = {
   getAppState(): Promise<AppState>;
   refreshUsage(): Promise<RefreshUsageResult>;
+  showDashboardContextMenu(x: number, y: number): Promise<void>;
 };
 
 export const tauriApi: QuotaDockApi = {
@@ -19,6 +20,10 @@ export const tauriApi: QuotaDockApi = {
           updated: false,
           message: "浏览器预览模式无法调用 Codex CLI。",
         }),
+  showDashboardContextMenu: (x, y) =>
+    hasTauriRuntime()
+      ? invoke<void>("show_dashboard_context_menu", { x, y })
+      : Promise.resolve(),
 };
 
 function hasTauriRuntime(): boolean {

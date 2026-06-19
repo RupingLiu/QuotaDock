@@ -6,9 +6,10 @@ use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Manager, Wry};
+use tauri::{App, AppHandle, LogicalPosition, Manager, Position, Wry};
 
 const MENU_SHOW: &str = "show";
+const MENU_HIDE: &str = "hide";
 const MENU_STARTUP: &str = "startup";
 const MENU_REFRESH_USAGE: &str = "refresh_usage";
 const MENU_CHECK_UPDATES: &str = "check_updates";
@@ -38,21 +39,8 @@ pub fn install(app: &App) -> tauri::Result<()> {
         .tooltip("QuotaDock")
         .show_menu_on_left_click(false)
         .icon(icon)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            MENU_SHOW => show_main_window(app),
-            MENU_STARTUP => {
-                if let Err(error) = startup::toggle() {
-                    eprintln!("toggle startup failed: {error}");
-                }
-                refresh_menu(app);
-            }
-            MENU_REFRESH_USAGE => {
-                #[cfg(not(test))]
-                crate::commands::refresh_usage_from_tray(app.clone());
-            }
-            MENU_CHECK_UPDATES => updates::check_now(app.clone()),
-            MENU_QUIT => app.exit(0),
-            _ => {}
+        .on_menu_event(|app, event| {
+            handle_menu_event(app, event.id().as_ref());
         })
         .on_tray_icon_event(|tray, event| {
             if matches!(
@@ -94,6 +82,7 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
 
     MenuBuilder::new(app)
         .text(MENU_SHOW, "显示 QuotaDock")
+        .text(MENU_HIDE, "隐藏悬浮窗")
         .text(MENU_STARTUP, startup_label)
         .text(MENU_REFRESH_USAGE, "刷新额度")
         .text(MENU_CHECK_UPDATES, "立即检查更新")
@@ -104,15 +93,60 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
         .build()
 }
 
+fn handle_menu_event(app: &AppHandle, menu_id: &str) {
+    match menu_id {
+        MENU_SHOW => show_main_window(app),
+        MENU_HIDE => hide_main_window(app),
+        MENU_STARTUP => {
+            if let Err(error) = startup::toggle() {
+                eprintln!("toggle startup failed: {error}");
+            }
+            refresh_menu(app);
+        }
+        MENU_REFRESH_USAGE => {
+            #[cfg(not(test))]
+            crate::commands::refresh_usage_from_tray(app.clone());
+        }
+        MENU_CHECK_UPDATES => updates::check_now(app.clone()),
+        MENU_QUIT => app.exit(0),
+        _ => {}
+    }
+}
+
+pub fn show_dashboard_context_menu(app: &AppHandle, x: f64, y: f64) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在，无法显示菜单。".to_string())?;
+    let status = current_menu_status(app);
+    let menu = build_menu(app, &status).map_err(|error| error.to_string())?;
+    window
+        .popup_menu_at(&menu, menu_position(x, y))
+        .map_err(|error| error.to_string())
+}
+
+fn current_menu_status(app: &AppHandle) -> String {
+    app.try_state::<TrayState>()
+        .and_then(|tray| tray.menu_status.lock().ok().map(|status| status.clone()))
+        .unwrap_or_else(|| DEFAULT_MENU_STATUS.to_string())
+}
+
+fn menu_position(x: f64, y: f64) -> Position {
+    Position::Logical(LogicalPosition::new(menu_coordinate(x), menu_coordinate(y)))
+}
+
+fn menu_coordinate(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 fn refresh_menu(app: &AppHandle) {
     let Some(tray) = app.try_state::<TrayState>() else {
         return;
     };
-    let status = tray
-        .menu_status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_else(|_| DEFAULT_MENU_STATUS.to_string());
+    let status = current_menu_status(app);
     if let Ok(menu) = build_menu(app, &status) {
         let _ = tray.icon.set_menu(Some(menu));
     }
@@ -174,6 +208,12 @@ pub fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+pub fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
     }
 }
 

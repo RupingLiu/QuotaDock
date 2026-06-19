@@ -88,6 +88,20 @@ pub async fn refresh_usage(app: AppHandle) -> Result<RefreshUsageResult, String>
     refresh_usage_internal(app, RefreshOrigin::Command).await
 }
 
+#[tauri::command]
+pub fn show_dashboard_context_menu(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
+    #[cfg(feature = "desktop")]
+    {
+        crate::tray::show_dashboard_context_menu(&app, x, y)
+    }
+
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = (app, x, y);
+        Err("当前构建不支持桌面菜单。".to_string())
+    }
+}
+
 pub fn refresh_usage_from_tray(app: AppHandle) {
     #[cfg(feature = "desktop")]
     crate::tray::set_menu_status(&app, "额度查询中...");

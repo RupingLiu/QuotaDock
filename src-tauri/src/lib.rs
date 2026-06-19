@@ -53,7 +53,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
-            commands::refresh_usage
+            commands::refresh_usage,
+            commands::show_dashboard_context_menu
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
