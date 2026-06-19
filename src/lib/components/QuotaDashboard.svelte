@@ -1,16 +1,21 @@
 <script lang="ts">
   import type { AppState, QuotaReading } from "$lib/types/usage";
-  import {
-    formatPercent,
-    formatReset,
-    progressValue,
-  } from "$lib/utils/format";
+  import { formatPercent } from "$lib/utils/format";
 
   export let appState: AppState | null;
   export let loading = false;
   export let refreshing = false;
   export let errorMessage: string | null = null;
   export let noticeMessage: string | null = null;
+
+  type QuotaRow = {
+    id: "five" | "week";
+    label: string;
+    ariaLabel: string;
+    valueTestId: string;
+    remainingPercent: number | null;
+    isLow: boolean;
+  };
 
   const emptyReading: QuotaReading = {
     remainingPercent: null,
@@ -21,67 +26,87 @@
   $: snapshot = appState?.latestSnapshot ?? null;
   $: fiveHour = snapshot?.fiveHour ?? emptyReading;
   $: weekly = snapshot?.weekly ?? emptyReading;
+  $: quotaRows = [
+    {
+      id: "five",
+      label: "5 小时",
+      ariaLabel: "5小时额度",
+      valueTestId: "five-hour-value",
+      remainingPercent: fiveHour.remainingPercent,
+      isLow:
+        typeof fiveHour.remainingPercent === "number" &&
+        fiveHour.remainingPercent < 20,
+    },
+    {
+      id: "week",
+      label: "1 周",
+      ariaLabel: "1周额度",
+      valueTestId: "weekly-value",
+      remainingPercent: weekly.remainingPercent,
+      isLow:
+        typeof weekly.remainingPercent === "number" &&
+        weekly.remainingPercent < 20,
+    },
+  ] satisfies QuotaRow[];
   $: statusText =
     errorMessage ??
     (refreshing ? "读取中..." : null) ??
     noticeMessage ??
     appState?.statusMessage ??
-    "点击查询";
+    null;
   $: busy = loading || refreshing;
-  $: weeklyResetText = `周更 ${formatReset(weekly)}`;
-  $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)} 更新 ${formatReset(fiveHour)}；1周 ${formatPercent(weekly.remainingPercent)} 更新 ${formatReset(weekly)}；${statusText}`;
+  $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)}；1周 ${formatPercent(weekly.remainingPercent)}${statusText ? `；${statusText}` : ""}`;
+
+  async function startWindowDrag(event: PointerEvent): Promise<void> {
+    if (event.button !== 0 || !hasTauriRuntime()) {
+      return;
+    }
+
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().startDragging();
+    } catch {
+      // The declarative Tauri drag region remains the primary drag path.
+    }
+  }
+
+  function hasTauriRuntime(): boolean {
+    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  }
 </script>
 
 <main class="float-shell" on:contextmenu|preventDefault>
-  <section class="mini-status" aria-label="QuotaDock 状态栏" title={titleText} data-tauri-drag-region>
-    <span class="logo-dot" aria-hidden="true" data-tauri-drag-region>
-      <span data-tauri-drag-region></span>
-    </span>
-    <h1 class="sr-only">Codex 额度</h1>
-
-    <div
-      class:low={typeof fiveHour.remainingPercent === "number" && fiveHour.remainingPercent < 20}
-      class="quota five"
-      aria-label="5小时额度"
-      style={`--value: ${progressValue(fiveHour.remainingPercent)}%`}
-      data-tauri-drag-region
-    >
-      <span class="sr-only">5小时额度</span>
-      <span class="quota-head" data-tauri-drag-region>
-        <span class="label" aria-hidden="true" data-tauri-drag-region>5H</span>
-        <strong data-testid="five-hour-value" data-tauri-drag-region>
-          {formatPercent(fiveHour.remainingPercent)}
-        </strong>
-      </span>
-      <span class="meter" aria-hidden="true" data-tauri-drag-region></span>
+  <section
+    class:error={Boolean(errorMessage)}
+    class="mini-status"
+    aria-busy={busy}
+    aria-label="QuotaDock 状态栏"
+    title={titleText}
+    data-tauri-drag-region
+    on:pointerdown={startWindowDrag}
+  >
+    <div class="panel-title" data-tauri-drag-region>
+      <span class="quota-icon" aria-hidden="true" data-tauri-drag-region></span>
+      <h1 data-tauri-drag-region>剩余用量</h1>
+      <span class="panel-chevron" aria-hidden="true" data-tauri-drag-region></span>
     </div>
 
-    <div
-      class:low={typeof weekly.remainingPercent === "number" && weekly.remainingPercent < 20}
-      class="quota week"
-      aria-label="1周额度"
-      style={`--value: ${progressValue(weekly.remainingPercent)}%`}
-      data-tauri-drag-region
-    >
-      <span class="sr-only">1周额度</span>
-      <span class="quota-head" data-tauri-drag-region>
-        <span class="label" aria-hidden="true" data-tauri-drag-region>1W</span>
-        <strong data-testid="weekly-value" data-tauri-drag-region>
-          {formatPercent(weekly.remainingPercent)}
+    {#each quotaRows as row (row.id)}
+      <div
+        class:low={row.isLow}
+        class="quota-row"
+        aria-label={row.ariaLabel}
+        data-tauri-drag-region
+      >
+        <span class="sr-only">{row.ariaLabel}</span>
+        <span class="quota-label" aria-hidden="true" data-tauri-drag-region>
+          {row.label}
+        </span>
+        <strong data-testid={row.valueTestId} data-tauri-drag-region>
+          {formatPercent(row.remainingPercent)}
         </strong>
-      </span>
-      <span class="meter" aria-hidden="true" data-tauri-drag-region></span>
-    </div>
-
-    <span
-      class:error={Boolean(errorMessage)}
-      class="meta"
-      data-testid="status-message"
-      aria-live="polite"
-      data-tauri-drag-region
-    >
-      {busy ? "查询中" : weeklyResetText}
-    </span>
+      </div>
+    {/each}
   </section>
 </main>
 
@@ -98,7 +123,7 @@
     height: 100%;
     margin: 0;
     overflow: hidden;
-    color: #e8f3f5;
+    color: #1c2227;
     background: transparent;
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
@@ -124,8 +149,8 @@
     width: 100%;
     height: 100%;
     display: grid;
-    place-items: center;
-    padding: 3px;
+    place-items: stretch;
+    padding: 4px;
     overflow: hidden;
     background: transparent;
   }
@@ -135,144 +160,101 @@
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-columns: 24px minmax(58px, 1fr) minmax(58px, 1fr) minmax(58px, 0.82fr);
-    align-items: center;
-    gap: 4px;
-    padding: 3px 4px;
-    border: 1px solid rgba(134, 226, 232, 0.26);
-    border-radius: 16px;
-    background: rgba(9, 14, 18, 0.88);
-    box-shadow:
-      0 10px 26px rgba(0, 0, 0, 0.28),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(18px) saturate(1.25);
-  }
-
-  .logo-dot {
-    position: relative;
-    width: 22px;
-    height: 22px;
-    display: grid;
-    place-items: center;
-    border: 1px solid rgba(118, 222, 229, 0.54);
+    grid-template-rows: 22px 1fr 1fr;
+    gap: 3px;
+    padding: 8px 12px 9px;
+    border: 1px solid rgba(22, 32, 38, 0.09);
     border-radius: 8px;
-    background: #102126;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    background: rgba(251, 252, 252, 0.92);
+    box-shadow:
+      0 10px 24px rgba(18, 25, 31, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(16px) saturate(1.12);
+    cursor: move;
   }
 
-  .logo-dot::before,
-  .logo-dot::after,
-  .logo-dot span {
+  .mini-status.error {
+    border-color: rgba(199, 126, 43, 0.3);
+  }
+
+  .panel-title {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 18px 1fr 12px;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .quota-icon {
+    position: relative;
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background:
+      radial-gradient(circle at center, #fbfcfc 0 5px, transparent 5.5px),
+      conic-gradient(from 220deg, #0f8f95 0 66%, rgba(15, 143, 149, 0.18) 66% 100%);
+  }
+
+  .quota-icon::after {
     content: "";
     position: absolute;
+    right: 1px;
+    bottom: 1px;
+    width: 4px;
+    height: 4px;
     border-radius: 999px;
-    background: #76dee5;
+    background: #f1a33c;
+    box-shadow: 0 0 0 2px rgba(251, 252, 252, 0.9);
   }
 
-  .logo-dot::before {
-    width: 11px;
-    height: 3px;
-    top: 6px;
-    left: 5px;
+  h1 {
+    margin: 0;
+    color: #1c2227;
+    font-size: 0.88rem;
+    font-weight: 650;
+    line-height: 1.1;
   }
 
-  .logo-dot::after {
-    width: 3px;
-    height: 10px;
-    right: 6px;
-    bottom: 5px;
-    background: #c4f05d;
+  .panel-chevron {
+    width: 7px;
+    height: 7px;
+    justify-self: end;
+    border-right: 1.5px solid #8b9399;
+    border-bottom: 1.5px solid #8b9399;
+    transform: translateY(-2px) rotate(45deg);
   }
 
-  .logo-dot span {
-    width: 6px;
-    height: 6px;
-    left: 6px;
-    bottom: 6px;
-    background: #f0b45d;
-  }
-
-  .quota {
-    --accent: #76dee5;
-    --track: rgba(233, 246, 247, 0.12);
+  .quota-row {
     min-width: 0;
-    height: 26px;
     display: grid;
-    grid-template-rows: 1fr 3px;
-    align-content: center;
-    gap: 3px;
-    padding: 3px 5px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 9px;
-    background: rgba(255, 255, 255, 0.045);
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    column-gap: 14px;
+    padding-left: 30px;
   }
 
-  .week {
-    --accent: #c4f05d;
-  }
-
-  .quota.low {
-    --accent: #f0b45d;
-  }
-
-  .quota-head {
+  .quota-label {
     min-width: 0;
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 4px;
-    white-space: nowrap;
-  }
-
-  .label {
-    color: rgba(232, 243, 245, 0.58);
-    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.52rem;
-    font-weight: 800;
+    overflow: hidden;
+    color: #1c2227;
+    font-size: 0.86rem;
+    font-weight: 650;
     line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   strong {
-    color: #f3fbfb;
+    color: #7b838a;
     font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
     font-size: 0.86rem;
     font-variant-numeric: tabular-nums;
-    font-weight: 850;
+    font-weight: 520;
     line-height: 1;
   }
 
-  .meter {
-    position: relative;
-    display: block;
-    height: 3px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--track);
-  }
-
-  .meter::after {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: var(--value);
-    border-radius: inherit;
-    background: var(--accent);
-  }
-
-  .meta {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: rgba(232, 243, 245, 0.62);
-    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.52rem;
-    font-weight: 760;
-    text-align: center;
-  }
-
-  .meta.error {
-    color: #f0b45d;
+  .quota-row.low strong {
+    color: #c77e2b;
   }
 
   @media (prefers-reduced-motion: reduce) {

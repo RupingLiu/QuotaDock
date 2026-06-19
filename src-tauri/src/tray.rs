@@ -1,5 +1,5 @@
 use crate::models::AppState;
-use crate::{floating_bar, startup, updates, version};
+use crate::{startup, updates, version};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -173,7 +173,6 @@ pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
-        floating_bar::position_main_window(app);
         let _ = window.set_focus();
     }
 }

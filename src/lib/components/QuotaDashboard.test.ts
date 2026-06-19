@@ -37,7 +37,7 @@ describe("QuotaDashboard", () => {
   it("renders the Chinese data deck with both quota windows", () => {
     render(QuotaDashboard, { props: { appState } });
 
-    expect(screen.getByText("Codex 额度")).toBeTruthy();
+    expect(screen.getByText("剩余用量")).toBeTruthy();
     expect(screen.getByText("5小时额度")).toBeTruthy();
     expect(screen.getByText("1周额度")).toBeTruthy();
     expect(screen.getByTestId("five-hour-value").textContent).toContain("72%");
@@ -51,13 +51,12 @@ describe("QuotaDashboard", () => {
     expect(screen.getByTestId("weekly-value").textContent).toContain("--");
   });
 
-  it("shows the weekly refresh time instead of the captured time", () => {
+  it("does not show reset timing in the status bar", () => {
     render(QuotaDashboard, { props: { appState } });
 
-    const status = screen.getByTestId("status-message").textContent ?? "";
-    expect(status).toContain("周更");
-    expect(status).toContain("06/23");
-    expect(status).not.toContain("06/18");
+    expect(screen.queryByTestId("status-message")).toBeNull();
+    expect(screen.queryByText(/周更/)).toBeNull();
+    expect(screen.queryByText(/06\/23/)).toBeNull();
   });
 
   it("does not render a status-bar refresh button", () => {
