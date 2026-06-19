@@ -94,7 +94,6 @@
     <div class="panel-title" data-tauri-drag-region>
       <span class="quota-icon" aria-hidden="true" data-tauri-drag-region></span>
       <h1 data-tauri-drag-region>剩余用量</h1>
-      <span class="panel-chevron" aria-hidden="true" data-tauri-drag-region></span>
     </div>
 
     {#each quotaRows as row (row.id)}
@@ -138,7 +137,7 @@
     height: 100%;
     margin: 0;
     overflow: hidden;
-    color: #1c2227;
+    color: #17242b;
     background: transparent;
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
@@ -165,7 +164,7 @@
     height: 100%;
     display: grid;
     place-items: stretch;
-    padding: 4px;
+    padding: 5px;
     overflow: hidden;
     background: transparent;
   }
@@ -175,16 +174,17 @@
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-rows: 22px 1fr 1fr;
-    gap: 3px;
-    padding: 8px 12px 9px;
-    border: 1px solid rgba(22, 32, 38, 0.09);
-    border-radius: 8px;
-    background: rgba(251, 252, 252, 0.92);
+    grid-template-rows: 24px 1fr 1fr;
+    gap: 2px;
+    padding: 10px 14px 11px;
+    border: 1px solid rgba(133, 154, 162, 0.18);
+    border-radius: 10px;
+    background: rgba(252, 253, 252, 0.96);
     box-shadow:
-      0 10px 24px rgba(18, 25, 31, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.82);
-    backdrop-filter: blur(16px) saturate(1.12);
+      0 12px 24px rgba(43, 59, 68, 0.12),
+      0 1px 2px rgba(43, 59, 68, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(18px) saturate(1.08);
     cursor: move;
   }
 
@@ -195,9 +195,9 @@
   .panel-title {
     min-width: 0;
     display: grid;
-    grid-template-columns: 18px 1fr 12px;
+    grid-template-columns: 18px 1fr;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
   }
 
   .quota-icon {
@@ -207,7 +207,7 @@
     border-radius: 999px;
     background:
       radial-gradient(circle at center, #fbfcfc 0 5px, transparent 5.5px),
-      conic-gradient(from 220deg, #0f8f95 0 66%, rgba(15, 143, 149, 0.18) 66% 100%);
+      conic-gradient(from 220deg, #168f95 0 68%, rgba(22, 143, 149, 0.16) 68% 100%);
   }
 
   .quota-icon::after {
@@ -218,42 +218,34 @@
     width: 4px;
     height: 4px;
     border-radius: 999px;
-    background: #f1a33c;
+    background: #ebb46b;
     box-shadow: 0 0 0 2px rgba(251, 252, 252, 0.9);
   }
 
   h1 {
     margin: 0;
-    color: #1c2227;
-    font-size: 0.88rem;
-    font-weight: 650;
+    color: #17242b;
+    font-size: 0.94rem;
+    font-weight: 680;
+    letter-spacing: 0;
     line-height: 1.1;
-  }
-
-  .panel-chevron {
-    width: 7px;
-    height: 7px;
-    justify-self: end;
-    border-right: 1.5px solid #8b9399;
-    border-bottom: 1.5px solid #8b9399;
-    transform: translateY(-2px) rotate(45deg);
   }
 
   .quota-row {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(68px, 1fr) auto;
+    grid-template-columns: minmax(62px, 1fr) auto;
     align-items: center;
     column-gap: 12px;
-    padding-left: 30px;
+    padding-left: 26px;
   }
 
   .quota-label {
     min-width: 0;
     overflow: hidden;
-    color: #1c2227;
-    font-size: 0.86rem;
-    font-weight: 650;
+    color: #1d2a31;
+    font-size: 0.88rem;
+    font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -262,7 +254,7 @@
   .quota-metrics {
     min-width: 0;
     display: grid;
-    grid-template-columns: 44px minmax(74px, auto);
+    grid-template-columns: 42px minmax(100px, auto);
     align-items: baseline;
     column-gap: 10px;
     justify-content: end;
@@ -270,18 +262,21 @@
 
   strong,
   .reset-time {
-    color: #7b838a;
-    font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
-    font-size: 0.86rem;
+    color: #687781;
+    font-family:
+      "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+      "Microsoft YaHei", sans-serif;
+    font-size: 0.88rem;
     font-variant-numeric: tabular-nums;
-    font-weight: 520;
+    font-feature-settings: "tnum";
+    font-weight: 540;
     line-height: 1;
   }
 
   .reset-time {
     overflow: hidden;
-    max-width: 96px;
-    font-weight: 430;
+    max-width: 110px;
+    font-weight: 450;
     text-align: right;
     text-overflow: ellipsis;
     white-space: nowrap;

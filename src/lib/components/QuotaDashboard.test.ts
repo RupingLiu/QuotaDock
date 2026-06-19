@@ -35,13 +35,14 @@ const appState: AppState = {
 
 describe("QuotaDashboard", () => {
   it("renders the Chinese data deck with both quota windows", () => {
-    render(QuotaDashboard, { props: { appState } });
+    const { container } = render(QuotaDashboard, { props: { appState } });
 
     expect(screen.getByText("剩余用量")).toBeTruthy();
     expect(screen.getByText("5小时额度")).toBeTruthy();
     expect(screen.getByText("1周额度")).toBeTruthy();
     expect(screen.getByTestId("five-hour-value").textContent).toContain("72%");
     expect(screen.getByTestId("weekly-value").textContent).toContain("46%");
+    expect(container.querySelector(".panel-chevron")).toBeNull();
   });
 
   it("shows unknown values as double dashes", () => {
