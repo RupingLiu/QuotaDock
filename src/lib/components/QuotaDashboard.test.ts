@@ -43,6 +43,14 @@ describe("QuotaDashboard", () => {
     expect(screen.getByTestId("five-hour-value").textContent).toContain("72%");
     expect(screen.getByTestId("weekly-value").textContent).toContain("46%");
     expect(container.querySelector(".panel-chevron")).toBeNull();
+    expect(
+      container
+        .querySelector(".mini-status")
+        ?.getAttribute("data-tauri-drag-region"),
+    ).toBe("deep");
+    expect(
+      container.querySelector(".mini-status [data-tauri-drag-region]"),
+    ).toBeNull();
   });
 
   it("shows unknown values as double dashes", () => {

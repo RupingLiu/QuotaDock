@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import type { AppState, QuotaReading } from "$lib/types/usage";
   import { formatPercent, formatReset } from "$lib/utils/format";
 
@@ -18,12 +19,18 @@
     resetText: string;
     isLow: boolean;
   };
+  type TauriWindowHandle = {
+    startDragging: () => Promise<void>;
+  };
 
   const emptyReading: QuotaReading = {
     remainingPercent: null,
     resetAt: null,
     resetCountdownSeconds: null,
   };
+  let tauriWindow: TauriWindowHandle | null = null;
+  let tauriWindowLoad: Promise<TauriWindowHandle | null> | null = null;
+  let lastDragStartAt = 0;
 
   $: snapshot = appState?.latestSnapshot ?? null;
   $: fiveHour = snapshot?.fiveHour ?? emptyReading;
@@ -63,17 +70,56 @@
   $: busy = loading || refreshing;
   $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)} 刷新 ${formatReset(fiveHour)}；1周 ${formatPercent(weekly.remainingPercent)} 刷新 ${formatReset(weekly)}${statusText ? `；${statusText}` : ""}`;
 
-  async function startWindowDrag(event: PointerEvent): Promise<void> {
+  onMount(() => {
+    void preloadTauriWindow();
+  });
+
+  function startWindowDrag(event: PointerEvent | MouseEvent): void {
     if (event.button !== 0 || !hasTauriRuntime()) {
       return;
     }
 
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().startDragging();
-    } catch {
-      // The declarative Tauri drag region remains the primary drag path.
+    const now = performance.now();
+    if (now - lastDragStartAt < 80) {
+      return;
     }
+    lastDragStartAt = now;
+
+    if (tauriWindow) {
+      void tauriWindow.startDragging().catch(() => {});
+      return;
+    }
+
+    void preloadTauriWindow().then((windowHandle) => {
+      void windowHandle?.startDragging().catch(() => {});
+    });
+  }
+
+  function preloadTauriWindow(): Promise<TauriWindowHandle | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(null);
+    }
+    if (tauriWindow) {
+      return Promise.resolve(tauriWindow);
+    }
+    if (tauriWindowLoad) {
+      return tauriWindowLoad;
+    }
+
+    tauriWindowLoad = import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        tauriWindow = getCurrentWindow();
+        return tauriWindow;
+      })
+      .catch(() => {
+        tauriWindowLoad = null;
+        return null;
+      });
+    return tauriWindowLoad;
+  }
+
+  function primeWindowDrag(): void {
+    void preloadTauriWindow();
   }
 
   function hasTauriRuntime(): boolean {
@@ -82,47 +128,40 @@
 </script>
 
 <main class="float-shell" on:contextmenu|preventDefault>
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <section
     class:error={Boolean(errorMessage)}
     class="mini-status"
     aria-busy={busy}
     aria-label="QuotaDock 状态栏"
     title={titleText}
-    data-tauri-drag-region
+    data-tauri-drag-region="deep"
+    on:pointerenter={primeWindowDrag}
     on:pointerdown={startWindowDrag}
+    on:mousedown={startWindowDrag}
   >
     {#each quotaRows as row (row.id)}
       <div
         class:low={row.isLow}
         class="quota-row"
         aria-label={row.ariaLabel}
-        data-tauri-drag-region
       >
         <span class="sr-only">{row.ariaLabel}</span>
         <span
           class:first={row.id === "five"}
           class="quota-label"
           aria-hidden="true"
-          data-tauri-drag-region
         >
           {#if row.id === "five"}
-            <span
-              class="quota-icon"
-              aria-hidden="true"
-              data-tauri-drag-region
-            ></span>
+            <span class="quota-icon" aria-hidden="true"></span>
           {/if}
           {row.label}
         </span>
-        <span class="quota-metrics" data-tauri-drag-region>
-          <strong data-testid={row.valueTestId} data-tauri-drag-region>
+        <span class="quota-metrics">
+          <strong data-testid={row.valueTestId}>
             {formatPercent(row.remainingPercent)}
           </strong>
-          <span
-            class="reset-time"
-            data-testid={row.resetTestId}
-            data-tauri-drag-region
-          >
+          <span class="reset-time" data-testid={row.resetTestId}>
             {row.resetText}
           </span>
         </span>
