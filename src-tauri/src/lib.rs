@@ -28,7 +28,7 @@ pub fn run() {
         window_state::restore_main_window(app.handle());
         commands::prewarm_codex_status_session();
         commands::start_auto_refresh(app.handle().clone());
-        updates::check_on_startup(app.handle().clone());
+        updates::start_auto_check(app.handle().clone());
         Ok(())
     });
 

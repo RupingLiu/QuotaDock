@@ -7,7 +7,9 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
@@ -20,9 +22,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const WINDOWS_X64: &str = "windows-x86_64";
+const AUTO_FIRST_CHECK_DELAY: Duration = Duration::from_secs(30);
+const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 static DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+static UPDATE_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+static AUTO_PROMPTED_VERSION: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Debug, Deserialize)]
 struct UpdateManifest {
@@ -42,10 +48,38 @@ struct UpdatePackage {
     filename: Option<String>,
 }
 
-pub fn check_on_startup(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let _ = check_download_and_prompt(app).await;
-    });
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckOrigin {
+    Manual,
+    Automatic,
+}
+
+#[derive(Debug)]
+struct UpdateCheckPermit;
+
+impl Drop for UpdateCheckPermit {
+    fn drop(&mut self) {
+        UPDATE_CHECK_RUNNING.store(false, Ordering::Release);
+    }
+}
+
+pub fn start_auto_check(app: AppHandle) {
+    let _ = thread::Builder::new()
+        .name("quotadock-auto-update-check".to_string())
+        .spawn(move || {
+            thread::sleep(AUTO_FIRST_CHECK_DELAY);
+            loop {
+                let check_app = app.clone();
+                tauri::async_runtime::block_on(async move {
+                    if let Err(error) =
+                        check_download_and_prompt(check_app, CheckOrigin::Automatic).await
+                    {
+                        eprintln!("automatic update check failed: {error}");
+                    }
+                });
+                thread::sleep(AUTO_CHECK_INTERVAL);
+            }
+        });
 }
 
 pub fn check_now(app: AppHandle) {
@@ -53,7 +87,7 @@ pub fn check_now(app: AppHandle) {
     crate::tray::set_menu_status(&app, "更新检查中...");
 
     tauri::async_runtime::spawn(async move {
-        let message = match check_download_and_prompt(app.clone()).await {
+        let message = match check_download_and_prompt(app.clone(), CheckOrigin::Manual).await {
             Ok(message) => message,
             Err(error) => format!("更新检查失败：{error}"),
         };
@@ -63,7 +97,8 @@ pub fn check_now(app: AppHandle) {
     });
 }
 
-async fn check_download_and_prompt(app: AppHandle) -> Result<String, String> {
+async fn check_download_and_prompt(app: AppHandle, origin: CheckOrigin) -> Result<String, String> {
+    let _permit = begin_update_check(origin)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent(format!("{APP_NAME}/{APP_VERSION} ({GITHUB_REPOSITORY})"))
@@ -74,12 +109,18 @@ async fn check_download_and_prompt(app: AppHandle) -> Result<String, String> {
     if !is_newer_version(&manifest.version, APP_VERSION)? {
         return Ok(format!("已是最新版本 v{APP_VERSION}"));
     }
+    if origin == CheckOrigin::Automatic && was_auto_prompted(&manifest.version) {
+        return Ok(format!("已提醒过更新包 v{}", manifest.version));
+    }
 
     let package = manifest
         .platforms
         .get(WINDOWS_X64)
         .ok_or_else(|| "发布清单中没有 Windows x64 更新包。".to_string())?;
     let installer = download_package(&app, &client, &manifest.version, package).await?;
+    if origin == CheckOrigin::Automatic {
+        remember_auto_prompt(&manifest.version);
+    }
     let message = install_prompt_message(&manifest, package, &installer);
     let answer = show_message("QuotaDock 更新已下载", &message, MB_YESNO | MB_ICONQUESTION);
     if answer == IDYES {
@@ -87,6 +128,29 @@ async fn check_download_and_prompt(app: AppHandle) -> Result<String, String> {
     }
 
     Ok(format!("已下载更新包 v{}", manifest.version))
+}
+
+fn begin_update_check(origin: CheckOrigin) -> Result<UpdateCheckPermit, String> {
+    UPDATE_CHECK_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| UpdateCheckPermit)
+        .map_err(|_| match origin {
+            CheckOrigin::Manual => "已有更新检查正在进行。".to_string(),
+            CheckOrigin::Automatic => "已有更新检查正在进行，跳过本次自动检查。".to_string(),
+        })
+}
+
+fn was_auto_prompted(version: &str) -> bool {
+    AUTO_PROMPTED_VERSION
+        .lock()
+        .map(|prompted| prompted.as_deref() == Some(version))
+        .unwrap_or(false)
+}
+
+fn remember_auto_prompt(version: &str) {
+    if let Ok(mut prompted) = AUTO_PROMPTED_VERSION.lock() {
+        *prompted = Some(version.to_string());
+    }
 }
 
 async fn fetch_manifest(client: &reqwest::Client) -> Result<UpdateManifest, String> {
@@ -350,7 +414,11 @@ fn wide_null(value: &str) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_size, is_newer_version, sha256_hex, temp_download_path};
+    use super::{
+        begin_update_check, format_size, is_newer_version, remember_auto_prompt, sha256_hex,
+        temp_download_path, was_auto_prompted, CheckOrigin,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn compares_semver_versions() {
@@ -383,5 +451,34 @@ mod tests {
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .starts_with("quotadock-update-"));
+    }
+
+    #[test]
+    fn prevents_concurrent_update_checks() {
+        let permit = begin_update_check(CheckOrigin::Manual).unwrap();
+
+        let duplicate = begin_update_check(CheckOrigin::Automatic).unwrap_err();
+
+        assert!(duplicate.contains("跳过本次自动检查"));
+        drop(permit);
+        assert!(begin_update_check(CheckOrigin::Manual).is_ok());
+    }
+
+    #[test]
+    fn remembers_auto_prompted_version() {
+        let unique_version = format!(
+            "99.{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        assert!(!was_auto_prompted(&unique_version));
+        remember_auto_prompt(&unique_version);
+
+        assert!(was_auto_prompted(&unique_version));
+        assert!(!was_auto_prompted("99.0.0-other"));
     }
 }

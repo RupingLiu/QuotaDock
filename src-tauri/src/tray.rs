@@ -96,7 +96,7 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
         .text(MENU_SHOW, "显示 QuotaDock")
         .text(MENU_STARTUP, startup_label)
         .text(MENU_REFRESH_USAGE, "刷新额度")
-        .text(MENU_CHECK_UPDATES, "检查更新")
+        .text(MENU_CHECK_UPDATES, "立即检查更新")
         .item(&status_item)
         .item(&version_item)
         .separator()
