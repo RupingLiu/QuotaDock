@@ -5,11 +5,11 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
+    MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO, SW_SHOWNORMAL,
 };
 
 const WINDOWS_X64: &str = "windows-x86_64";
@@ -158,11 +158,40 @@ fn install_prompt_message(
 }
 
 fn launch_installer_and_exit(app: &AppHandle, installer: &Path) -> Result<(), String> {
-    Command::new(installer)
-        .spawn()
-        .map_err(|error| format!("启动安装程序失败：{error}"))?;
-    app.exit(0);
-    Ok(())
+    match shell_execute_installer(installer, "open") {
+        Ok(()) => {
+            app.exit(0);
+            Ok(())
+        }
+        Err(open_error) => match shell_execute_installer(installer, "runas") {
+            Ok(()) => {
+                app.exit(0);
+                Ok(())
+            }
+            Err(runas_error) => Err(format!("{open_error}；提权启动也失败：{runas_error}")),
+        },
+    }
+}
+
+fn shell_execute_installer(installer: &Path, operation: &str) -> Result<(), String> {
+    let operation = wide_null(operation);
+    let file = wide_null(&installer.display().to_string());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+
+    if result > 32 {
+        return Ok(());
+    }
+
+    Err(format!("启动安装程序失败：ShellExecuteW 返回 {result}"))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
