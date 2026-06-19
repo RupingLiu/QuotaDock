@@ -20,12 +20,14 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(feature = "desktop")]
     let builder = builder.setup(|app| {
+        commands::install_refresh_coordinator(app);
         tray::install(app)?;
         if let Ok(state) = commands::load_app_state(app.handle()) {
             tray::sync_from_app_state(app.handle(), &state);
         }
         floating_bar::position_main_window(app.handle());
         commands::prewarm_codex_status_session();
+        commands::start_auto_refresh(app.handle().clone());
         updates::check_on_startup(app.handle().clone());
         Ok(())
     });

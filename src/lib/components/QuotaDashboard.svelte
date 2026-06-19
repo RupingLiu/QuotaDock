@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { AppState, QuotaReading } from "$lib/types/usage";
   import {
-    formatCapturedAt,
     formatPercent,
     formatReset,
     progressValue,
@@ -12,7 +11,6 @@
   export let refreshing = false;
   export let errorMessage: string | null = null;
   export let noticeMessage: string | null = null;
-  export let onRefresh: () => void | Promise<void> = () => {};
 
   const emptyReading: QuotaReading = {
     remainingPercent: null,
@@ -29,13 +27,13 @@
     noticeMessage ??
     appState?.statusMessage ??
     "点击查询";
-  $: updatedAt = snapshot ? formatCapturedAt(snapshot.capturedAt) : "未更新";
   $: busy = loading || refreshing;
+  $: weeklyResetText = `周更 ${formatReset(weekly)}`;
   $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)} 更新 ${formatReset(fiveHour)}；1周 ${formatPercent(weekly.remainingPercent)} 更新 ${formatReset(weekly)}；${statusText}`;
 </script>
 
-<main class="float-shell">
-  <section class="mini-status" aria-label="QuotaDock 右下角状态栏" title={titleText} data-tauri-drag-region>
+<main class="float-shell" on:contextmenu|preventDefault>
+  <section class="mini-status" aria-label="QuotaDock 状态栏" title={titleText} data-tauri-drag-region>
     <span class="logo-dot" aria-hidden="true" data-tauri-drag-region>
       <span data-tauri-drag-region></span>
     </span>
@@ -82,30 +80,8 @@
       aria-live="polite"
       data-tauri-drag-region
     >
-      {refreshing ? "查询中" : snapshot ? updatedAt : statusText}
+      {busy ? "查询中" : weeklyResetText}
     </span>
-
-    <button type="button" disabled={busy} on:click={onRefresh} aria-label="自动查询" title="自动查询">
-      <svg aria-hidden="true" viewBox="0 0 24 24" class:spin={refreshing}>
-        <path
-          d="M19 6v5h-5"
-          fill="none"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-        />
-        <path
-          d="M18 11a6 6 0 1 0-1.76 4.24"
-          fill="none"
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-        />
-      </svg>
-      <span class="sr-only">自动查询</span>
-    </button>
   </section>
 </main>
 
@@ -127,6 +103,8 @@
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
       "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   :global(body > div) {
@@ -147,7 +125,7 @@
     height: 100%;
     display: grid;
     place-items: center;
-    padding: 4px;
+    padding: 3px;
     overflow: hidden;
     background: transparent;
   }
@@ -157,12 +135,12 @@
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-columns: 28px minmax(66px, 1fr) minmax(66px, 1fr) minmax(46px, 0.74fr) 30px;
+    grid-template-columns: 24px minmax(58px, 1fr) minmax(58px, 1fr) minmax(58px, 0.82fr);
     align-items: center;
-    gap: 5px;
-    padding: 4px 5px;
+    gap: 4px;
+    padding: 3px 4px;
     border: 1px solid rgba(134, 226, 232, 0.26);
-    border-radius: 18px;
+    border-radius: 16px;
     background: rgba(9, 14, 18, 0.88);
     box-shadow:
       0 10px 26px rgba(0, 0, 0, 0.28),
@@ -172,12 +150,12 @@
 
   .logo-dot {
     position: relative;
-    width: 26px;
-    height: 26px;
+    width: 22px;
+    height: 22px;
     display: grid;
     place-items: center;
     border: 1px solid rgba(118, 222, 229, 0.54);
-    border-radius: 9px;
+    border-radius: 8px;
     background: #102126;
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   }
@@ -192,25 +170,25 @@
   }
 
   .logo-dot::before {
-    width: 13px;
+    width: 11px;
     height: 3px;
-    top: 7px;
-    left: 6px;
+    top: 6px;
+    left: 5px;
   }
 
   .logo-dot::after {
     width: 3px;
-    height: 12px;
-    right: 7px;
-    bottom: 6px;
+    height: 10px;
+    right: 6px;
+    bottom: 5px;
     background: #c4f05d;
   }
 
   .logo-dot span {
-    width: 7px;
-    height: 7px;
-    left: 7px;
-    bottom: 7px;
+    width: 6px;
+    height: 6px;
+    left: 6px;
+    bottom: 6px;
     background: #f0b45d;
   }
 
@@ -218,14 +196,14 @@
     --accent: #76dee5;
     --track: rgba(233, 246, 247, 0.12);
     min-width: 0;
-    height: 30px;
+    height: 26px;
     display: grid;
     grid-template-rows: 1fr 3px;
     align-content: center;
-    gap: 4px;
-    padding: 4px 6px;
+    gap: 3px;
+    padding: 3px 5px;
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
+    border-radius: 9px;
     background: rgba(255, 255, 255, 0.045);
   }
 
@@ -249,7 +227,7 @@
   .label {
     color: rgba(232, 243, 245, 0.58);
     font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.56rem;
+    font-size: 0.52rem;
     font-weight: 800;
     line-height: 1;
   }
@@ -257,7 +235,7 @@
   strong {
     color: #f3fbfb;
     font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
-    font-size: 0.98rem;
+    font-size: 0.86rem;
     font-variant-numeric: tabular-nums;
     font-weight: 850;
     line-height: 1;
@@ -288,7 +266,7 @@
     white-space: nowrap;
     color: rgba(232, 243, 245, 0.62);
     font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
-    font-size: 0.56rem;
+    font-size: 0.52rem;
     font-weight: 760;
     text-align: center;
   }
@@ -297,58 +275,9 @@
     color: #f0b45d;
   }
 
-  button {
-    width: 28px;
-    height: 28px;
-    display: grid;
-    place-items: center;
-    border: 1px solid rgba(118, 222, 229, 0.42);
-    border-radius: 10px;
-    color: #061013;
-    background: #76dee5;
-    cursor: pointer;
-    line-height: 1;
-    transition:
-      background-color 180ms ease,
-      border-color 180ms ease,
-      color 180ms ease;
-  }
-
-  button:hover:not(:disabled) {
-    border-color: rgba(196, 240, 93, 0.72);
-    background: #c4f05d;
-  }
-
-  button svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  .spin {
-    animation: spin 760ms linear infinite;
-  }
-
-  button:disabled {
-    cursor: not-allowed;
-    opacity: 0.56;
-  }
-
-  button:focus-visible {
-    outline: 3px solid rgba(118, 222, 229, 0.36);
-    outline-offset: 2px;
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    button,
-    .spin {
+    * {
       transition: none;
-      animation: none;
-    }
-  }
-
-  @keyframes spin {
-    to {
-      rotate: 360deg;
     }
   }
 

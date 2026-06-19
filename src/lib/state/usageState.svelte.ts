@@ -29,11 +29,16 @@ export class UsageState {
     await this.capture(async () => {
       this.refreshing = true;
       const result = await this.api.refreshUsage();
-      this.appState = result.appState;
-      this.noticeMessage = result.message;
+      this.applyRefreshResult(result);
     }).finally(() => {
       this.refreshing = false;
     });
+  }
+
+  applyRefreshResult(result: { appState: AppState; message: string }): void {
+    this.errorMessage = null;
+    this.appState = result.appState;
+    this.noticeMessage = result.message;
   }
 
   private async capture(work: () => Promise<void>): Promise<void> {

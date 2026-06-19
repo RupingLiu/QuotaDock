@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/svelte";
+import { afterEach, describe, expect, it } from "vitest";
 import QuotaDashboard from "$lib/components/QuotaDashboard.svelte";
 import type { AppState, QuotaSnapshot } from "$lib/types/usage";
 
@@ -51,29 +51,20 @@ describe("QuotaDashboard", () => {
     expect(screen.getByTestId("weekly-value").textContent).toContain("--");
   });
 
-  it("surfaces automatic query unavailable messages", () => {
-    render(QuotaDashboard, {
-      props: {
-        appState: null,
-        noticeMessage: "当前无法自动查询，请确认 Codex CLI 可用后重试。",
-      },
-    });
+  it("shows the weekly refresh time instead of the captured time", () => {
+    render(QuotaDashboard, { props: { appState } });
 
-    expect(screen.getByTestId("status-message").textContent).toContain("确认 Codex CLI 可用");
+    const status = screen.getByTestId("status-message").textContent ?? "";
+    expect(status).toContain("周更");
+    expect(status).toContain("06/23");
+    expect(status).not.toContain("06/18");
   });
 
-  it("keeps only the automatic query action", async () => {
-    const onRefresh = vi.fn();
-    render(QuotaDashboard, {
-      props: {
-        appState: null,
-        onRefresh,
-      },
-    });
+  it("does not render a status-bar refresh button", () => {
+    render(QuotaDashboard, { props: { appState } });
 
-    await fireEvent.click(screen.getByLabelText("自动查询"));
-
-    expect(onRefresh).toHaveBeenCalled();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByLabelText("自动查询")).toBeNull();
     expect(screen.queryByText("粘贴 /status 更新")).toBeNull();
     expect(screen.queryByText("保存解析结果")).toBeNull();
     expect(screen.queryByText("清空")).toBeNull();

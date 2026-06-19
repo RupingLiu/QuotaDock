@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const STATE_VERSION: u32 = 2;
-pub const DEFAULT_STATUS_MESSAGE: &str = "尚未获取额度。请点击自动查询。";
+pub const DEFAULT_STATUS_MESSAGE: &str = "尚未获取额度。可通过托盘刷新，后台也会自动查询。";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

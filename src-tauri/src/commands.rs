@@ -3,8 +3,78 @@ use crate::status_parser::{parse_status_text_with_source, ParseClock};
 use crate::usage_store::{StoreError, UsageStore};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{App, AppHandle, Emitter, Manager};
+
+pub const USAGE_STATE_CHANGED_EVENT: &str = "usage-state-changed";
+const AUTO_FIRST_REFRESH_DELAY: Duration = Duration::from_secs(10);
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone, Default)]
+pub struct RefreshCoordinator {
+    running: Arc<AtomicBool>,
+}
+
+struct RefreshPermit {
+    running: Arc<AtomicBool>,
+}
+
+impl RefreshCoordinator {
+    fn try_begin(&self) -> Option<RefreshPermit> {
+        self.running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| RefreshPermit {
+                running: Arc::clone(&self.running),
+            })
+    }
+}
+
+impl Drop for RefreshPermit {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RefreshOrigin {
+    Command,
+    Tray,
+    Automatic,
+}
+
+impl RefreshOrigin {
+    fn duplicate_message(self) -> String {
+        match self {
+            Self::Automatic => "已有额度查询正在进行，跳过本次自动查询。".to_string(),
+            Self::Command | Self::Tray => "已有额度查询正在进行。".to_string(),
+        }
+    }
+}
+
+pub fn install_refresh_coordinator(app: &App) {
+    app.manage(RefreshCoordinator::default());
+}
+
+pub fn start_auto_refresh(app: AppHandle) {
+    let _ = thread::Builder::new()
+        .name("quotadock-auto-refresh".to_string())
+        .spawn(move || {
+            thread::sleep(AUTO_FIRST_REFRESH_DELAY);
+            loop {
+                let refresh_app = app.clone();
+                tauri::async_runtime::block_on(async move {
+                    let _ = refresh_usage_internal(refresh_app, RefreshOrigin::Automatic).await;
+                });
+                thread::sleep(AUTO_REFRESH_INTERVAL);
+            }
+        });
+}
 
 #[tauri::command]
 pub fn get_app_state(app: AppHandle) -> Result<AppState, String> {
@@ -15,12 +85,43 @@ pub fn get_app_state(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 pub async fn refresh_usage(app: AppHandle) -> Result<RefreshUsageResult, String> {
+    refresh_usage_internal(app, RefreshOrigin::Command).await
+}
+
+pub fn refresh_usage_from_tray(app: AppHandle) {
+    #[cfg(feature = "desktop")]
+    crate::tray::set_menu_status(&app, "额度查询中...");
+
+    tauri::async_runtime::spawn(async move {
+        let message = match refresh_usage_internal(app.clone(), RefreshOrigin::Tray).await {
+            Ok(result) if result.updated => "额度已更新".to_string(),
+            Ok(result) => result.message,
+            Err(error) => error,
+        };
+
+        #[cfg(feature = "desktop")]
+        crate::tray::set_menu_status_temporarily(&app, message);
+    });
+}
+
+async fn refresh_usage_internal(
+    app: AppHandle,
+    origin: RefreshOrigin,
+) -> Result<RefreshUsageResult, String> {
+    let _permit = begin_refresh(&app, origin)?;
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || refresh_usage_blocking(worker_app))
         .await
         .map_err(|error| format!("后台查询任务失败：{error}"))??;
     sync_tray(&app, &result.app_state);
+    emit_usage_state(&app, &result);
     Ok(result)
+}
+
+fn begin_refresh(app: &AppHandle, origin: RefreshOrigin) -> Result<RefreshPermit, String> {
+    app.try_state::<RefreshCoordinator>()
+        .and_then(|coordinator| coordinator.try_begin())
+        .ok_or_else(|| origin.duplicate_message())
 }
 
 fn refresh_usage_blocking(app: AppHandle) -> Result<RefreshUsageResult, String> {
@@ -1271,6 +1372,12 @@ fn store_for_app(app: &AppHandle) -> Result<UsageStore, String> {
 fn sync_tray(_app: &AppHandle, _state: &AppState) {
     #[cfg(feature = "desktop")]
     crate::tray::sync_from_app_state(_app, _state);
+}
+
+fn emit_usage_state(app: &AppHandle, result: &RefreshUsageResult) {
+    if let Err(error) = app.emit(USAGE_STATE_CHANGED_EVENT, result.clone()) {
+        eprintln!("emit usage state failed: {error}");
+    }
 }
 
 fn to_command_error(error: StoreError) -> String {

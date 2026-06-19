@@ -9,7 +9,7 @@ use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_YESNO,
+    MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
 };
 
 const WINDOWS_X64: &str = "windows-x86_64";
@@ -32,31 +32,28 @@ struct UpdatePackage {
     filename: Option<String>,
 }
 
-#[derive(Clone, Copy)]
-enum CheckMode {
-    Startup,
-    Manual,
-}
-
 pub fn check_on_startup(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let _ = check_download_and_prompt(app, CheckMode::Startup).await;
+        let _ = check_download_and_prompt(app).await;
     });
 }
 
 pub fn check_now(app: AppHandle) {
+    #[cfg(feature = "desktop")]
+    crate::tray::set_menu_status(&app, "更新检查中...");
+
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = check_download_and_prompt(app, CheckMode::Manual).await {
-            show_message(
-                "QuotaDock 更新检查",
-                &format!("更新检查失败：{error}"),
-                MB_OK | MB_ICONERROR,
-            );
-        }
+        let message = match check_download_and_prompt(app.clone()).await {
+            Ok(message) => message,
+            Err(error) => format!("更新检查失败：{error}"),
+        };
+
+        #[cfg(feature = "desktop")]
+        crate::tray::set_menu_status_temporarily(&app, message);
     });
 }
 
-async fn check_download_and_prompt(app: AppHandle, mode: CheckMode) -> Result<(), String> {
+async fn check_download_and_prompt(app: AppHandle) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent(format!("{APP_NAME}/{APP_VERSION} ({GITHUB_REPOSITORY})"))
@@ -65,14 +62,7 @@ async fn check_download_and_prompt(app: AppHandle, mode: CheckMode) -> Result<()
 
     let manifest = fetch_manifest(&client).await?;
     if !is_newer_version(&manifest.version, APP_VERSION)? {
-        if matches!(mode, CheckMode::Manual) {
-            show_message(
-                "QuotaDock 更新检查",
-                &format!("当前已是最新版本 v{APP_VERSION}。"),
-                MB_OK | MB_ICONINFORMATION,
-            );
-        }
-        return Ok(());
+        return Ok(format!("已是最新版本 v{APP_VERSION}"));
     }
 
     let package = manifest
@@ -86,7 +76,7 @@ async fn check_download_and_prompt(app: AppHandle, mode: CheckMode) -> Result<()
         launch_installer_and_exit(&app, &installer)?;
     }
 
-    Ok(())
+    Ok(format!("已下载更新包 v{}", manifest.version))
 }
 
 async fn fetch_manifest(client: &reqwest::Client) -> Result<UpdateManifest, String> {
