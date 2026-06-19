@@ -91,11 +91,6 @@
     data-tauri-drag-region
     on:pointerdown={startWindowDrag}
   >
-    <div class="panel-title" data-tauri-drag-region>
-      <span class="quota-icon" aria-hidden="true" data-tauri-drag-region></span>
-      <h1 data-tauri-drag-region>剩余用量</h1>
-    </div>
-
     {#each quotaRows as row (row.id)}
       <div
         class:low={row.isLow}
@@ -104,7 +99,19 @@
         data-tauri-drag-region
       >
         <span class="sr-only">{row.ariaLabel}</span>
-        <span class="quota-label" aria-hidden="true" data-tauri-drag-region>
+        <span
+          class:first={row.id === "five"}
+          class="quota-label"
+          aria-hidden="true"
+          data-tauri-drag-region
+        >
+          {#if row.id === "five"}
+            <span
+              class="quota-icon"
+              aria-hidden="true"
+              data-tauri-drag-region
+            ></span>
+          {/if}
           {row.label}
         </span>
         <span class="quota-metrics" data-tauri-drag-region>
@@ -174,9 +181,9 @@
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-rows: 24px 1fr 1fr;
-    gap: 2px;
-    padding: 10px 14px 11px;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    padding: 12px 14px 12px 12px;
     border: 1px solid rgba(133, 154, 162, 0.18);
     border-radius: 10px;
     background: rgba(252, 253, 252, 0.96);
@@ -190,14 +197,6 @@
 
   .mini-status.error {
     border-color: rgba(199, 126, 43, 0.3);
-  }
-
-  .panel-title {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: 18px 1fr;
-    align-items: center;
-    gap: 8px;
   }
 
   .quota-icon {
@@ -222,33 +221,30 @@
     box-shadow: 0 0 0 2px rgba(251, 252, 252, 0.9);
   }
 
-  h1 {
-    margin: 0;
-    color: #17242b;
-    font-size: 0.94rem;
-    font-weight: 680;
-    letter-spacing: 0;
-    line-height: 1.1;
-  }
-
   .quota-row {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(62px, 1fr) auto;
+    grid-template-columns: minmax(74px, 1fr) auto;
     align-items: center;
     column-gap: 12px;
-    padding-left: 26px;
   }
 
   .quota-label {
     min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
     overflow: hidden;
     color: #1d2a31;
-    font-size: 0.88rem;
+    font-size: 0.94rem;
     font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .quota-label:not(.first) {
+    padding-left: 23px;
   }
 
   .quota-metrics {
