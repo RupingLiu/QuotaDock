@@ -23,6 +23,26 @@ describe("format utilities", () => {
     ).toBe("2小时15分钟后");
   });
 
+  it("formats Codex English reset dates in Chinese", () => {
+    expect(
+      formatReset({
+        remainingPercent: 31,
+        resetAt: "07:00 on 25 Jun",
+        resetCountdownSeconds: null,
+      }),
+    ).toBe("6月25日 07:00");
+  });
+
+  it("formats ISO reset dates in Chinese", () => {
+    expect(
+      formatReset({
+        remainingPercent: 46,
+        resetAt: "2026-06-23T09:00:00Z",
+        resetCountdownSeconds: null,
+      }),
+    ).toContain("6月23日");
+  });
+
   it("formats unix capture times", () => {
     expect(formatCapturedAt("unix:1781769600")).not.toBe("尚未更新");
   });

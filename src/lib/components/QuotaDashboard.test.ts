@@ -58,7 +58,7 @@ describe("QuotaDashboard", () => {
     expect(screen.getByTestId("five-hour-reset").textContent).toContain(
       "2小时15分钟后",
     );
-    expect(screen.getByTestId("weekly-reset").textContent).toContain("06/23");
+    expect(screen.getByTestId("weekly-reset").textContent).toContain("6月23日");
   });
 
   it("does not render a status-bar refresh button", () => {

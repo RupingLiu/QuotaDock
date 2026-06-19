@@ -60,6 +60,11 @@ export function storageLabel(status: StorageStatus | null | undefined): string {
 }
 
 function formatDateTimeOrRaw(value: string): string {
+  const codexReset = formatCodexResetDate(value);
+  if (codexReset) {
+    return codexReset;
+  }
+
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
@@ -68,12 +73,52 @@ function formatDateTimeOrRaw(value: string): string {
 }
 
 function formatDate(date: Date): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${formatTime(
+    date.getHours(),
+    date.getMinutes(),
+  )}`;
+}
+
+function formatCodexResetDate(value: string): string | null {
+  const match = value
+    .trim()
+    .match(/^(\d{1,2}):(\d{2})\s+on\s+(\d{1,2})\s+([a-z]{3,9})$/i);
+  if (!match) {
+    return null;
+  }
+
+  const [, hour, minute, day, monthName] = match;
+  const month = monthNumber(monthName);
+  if (!month) {
+    return null;
+  }
+
+  return `${month}月${Number(day)}日 ${formatTime(Number(hour), Number(minute))}`;
+}
+
+function monthNumber(value: string): number | null {
+  const month = value.slice(0, 3).toLowerCase();
+  const index = [
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec",
+  ].indexOf(month);
+  return index >= 0 ? index + 1 : null;
+}
+
+function formatTime(hour: number, minute: number): string {
+  return `${hour.toString().padStart(2, "0")}:${minute
+    .toString()
+    .padStart(2, "0")}`;
 }
 
 function formatDuration(seconds: number): string {
