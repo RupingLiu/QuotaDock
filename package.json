@@ -1,6 +1,6 @@
 {
   "name": "quotadock",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Windows-first Codex usage utility shell.",
   "type": "module",
   "scripts": {

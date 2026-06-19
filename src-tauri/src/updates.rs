@@ -3,16 +3,26 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO, SW_SHOWNORMAL,
 };
 
 const WINDOWS_X64: &str = "windows-x86_64";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+static DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 struct UpdateManifest {
@@ -80,15 +90,8 @@ async fn check_download_and_prompt(app: AppHandle) -> Result<String, String> {
 }
 
 async fn fetch_manifest(client: &reqwest::Client) -> Result<UpdateManifest, String> {
-    client
-        .get(UPDATE_MANIFEST_URL)
-        .send()
-        .await
-        .map_err(|error| format!("获取更新清单失败：{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("获取更新清单失败：{error}"))?
-        .json::<UpdateManifest>()
-        .await
+    let bytes = fetch_url_bytes(client, UPDATE_MANIFEST_URL, "获取更新清单").await?;
+    serde_json::from_slice::<UpdateManifest>(&bytes)
         .map_err(|error| format!("解析更新清单失败：{error}"))
 }
 
@@ -98,16 +101,7 @@ async fn download_package(
     version: &str,
     package: &UpdatePackage,
 ) -> Result<PathBuf, String> {
-    let bytes = client
-        .get(&package.url)
-        .send()
-        .await
-        .map_err(|error| format!("下载安装包失败：{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("下载安装包失败：{error}"))?
-        .bytes()
-        .await
-        .map_err(|error| format!("读取安装包失败：{error}"))?;
+    let bytes = fetch_url_bytes(client, &package.url, "下载安装包").await?;
 
     let digest = sha256_hex(&bytes);
     if !digest.eq_ignore_ascii_case(&package.sha256) {
@@ -127,6 +121,123 @@ async fn download_package(
     let installer = update_dir.join(filename);
     fs::write(&installer, &bytes).map_err(|error| format!("保存安装包失败：{error}"))?;
     Ok(installer)
+}
+
+async fn fetch_url_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    action: &str,
+) -> Result<Vec<u8>, String> {
+    match fetch_url_bytes_with_reqwest(client, url).await {
+        Ok(bytes) => Ok(bytes),
+        Err(reqwest_error) => {
+            let reqwest_error = describe_error_chain(&reqwest_error);
+            let url = url.to_string();
+            match tauri::async_runtime::spawn_blocking(move || download_with_system_tool(&url)).await
+            {
+                Ok(Ok(bytes)) => Ok(bytes),
+                Ok(Err(system_error)) => Err(format!(
+                    "{action}失败：内置网络请求失败：{reqwest_error}；系统下载工具也失败：{system_error}"
+                )),
+                Err(join_error) => Err(format!(
+                    "{action}失败：内置网络请求失败：{reqwest_error}；系统下载任务启动失败：{join_error}"
+                )),
+            }
+        }
+    }
+}
+
+async fn fetch_url_bytes_with_reqwest(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<Vec<u8>, reqwest::Error> {
+    let response = client.get(url).send().await?.error_for_status()?;
+    Ok(response.bytes().await?.to_vec())
+}
+
+fn download_with_system_tool(url: &str) -> Result<Vec<u8>, String> {
+    let path = temp_download_path();
+    let result = try_curl_download(url, &path).or_else(|curl_error| {
+        try_powershell_download(url, &path).map_err(|powershell_error| {
+            format!("curl.exe: {curl_error}；PowerShell: {powershell_error}")
+        })
+    });
+
+    let bytes = match result {
+        Ok(()) => fs::read(&path).map_err(|error| format!("读取系统下载临时文件失败：{error}")),
+        Err(error) => Err(error),
+    };
+    let _ = fs::remove_file(&path);
+    bytes
+}
+
+fn try_curl_download(url: &str, path: &Path) -> Result<(), String> {
+    let mut command = Command::new("curl.exe");
+    command
+        .args([
+            "-L",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "90",
+            "--output",
+        ])
+        .arg(path)
+        .arg(url);
+    run_download_command("curl.exe", &mut command)
+}
+
+fn try_powershell_download(url: &str, path: &Path) -> Result<(), String> {
+    let mut command = Command::new("powershell.exe");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing",
+        ])
+        .arg(url)
+        .arg(path);
+    run_download_command("powershell.exe", &mut command)
+}
+
+fn run_download_command(name: &str, command: &mut Command) -> Result<(), String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_command_window(command);
+
+    let output = command
+        .output()
+        .map_err(|error| format!("启动失败：{error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format_command_failure(name, &output))
+    }
+}
+
+fn hide_command_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+fn temp_download_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = DOWNLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "quotadock-update-{}-{nanos}-{counter}.tmp",
+        std::process::id()
+    ))
 }
 
 fn is_newer_version(candidate: &str, current: &str) -> Result<bool, String> {
@@ -199,6 +310,29 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn describe_error_chain(error: &dyn Error) -> String {
+    let mut messages = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(error) = source {
+        messages.push(error.to_string());
+        source = error.source();
+    }
+    messages.join(" / ")
+}
+
+fn format_command_failure(name: &str, output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "无输出".to_string()
+    };
+    format!("{name} 退出码 {}：{detail}", output.status)
+}
+
 fn format_size(bytes: u64) -> String {
     const MIB: f64 = 1024.0 * 1024.0;
     format!("{:.1} MB", bytes as f64 / MIB)
@@ -216,7 +350,7 @@ fn wide_null(value: &str) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_size, is_newer_version, sha256_hex};
+    use super::{format_size, is_newer_version, sha256_hex, temp_download_path};
 
     #[test]
     fn compares_semver_versions() {
@@ -236,5 +370,18 @@ mod tests {
     #[test]
     fn formats_package_size() {
         assert_eq!(format_size(4 * 1024 * 1024), "4.0 MB");
+    }
+
+    #[test]
+    fn creates_unique_temp_download_paths() {
+        let first = temp_download_path();
+        let second = temp_download_path();
+
+        assert_ne!(first, second);
+        assert!(first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .starts_with("quotadock-update-"));
     }
 }
