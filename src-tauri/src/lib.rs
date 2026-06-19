@@ -8,6 +8,8 @@ mod tray;
 mod updates;
 mod usage_store;
 mod version;
+#[cfg(feature = "desktop")]
+mod window_state;
 
 #[cfg(not(test))]
 mod commands;
@@ -23,6 +25,7 @@ pub fn run() {
         if let Ok(state) = commands::load_app_state(app.handle()) {
             tray::sync_from_app_state(app.handle(), &state);
         }
+        window_state::restore_main_window(app.handle());
         commands::prewarm_codex_status_session();
         commands::start_auto_refresh(app.handle().clone());
         updates::check_on_startup(app.handle().clone());
@@ -33,9 +36,16 @@ pub fn run() {
         .on_window_event(|window, event| {
             #[cfg(feature = "desktop")]
             if window.label() == "main" {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
+                match event {
+                    tauri::WindowEvent::Moved(position) => {
+                        window_state::save_main_window_position(window, *position);
+                    }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        window_state::save_current_main_window_position(window);
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    _ => {}
                 }
             }
             #[cfg(not(feature = "desktop"))]
