@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppState, QuotaReading } from "$lib/types/usage";
-  import { formatPercent } from "$lib/utils/format";
+  import { formatPercent, formatReset } from "$lib/utils/format";
 
   export let appState: AppState | null;
   export let loading = false;
@@ -13,7 +13,9 @@
     label: string;
     ariaLabel: string;
     valueTestId: string;
+    resetTestId: string;
     remainingPercent: number | null;
+    resetText: string;
     isLow: boolean;
   };
 
@@ -32,7 +34,9 @@
       label: "5 小时",
       ariaLabel: "5小时额度",
       valueTestId: "five-hour-value",
+      resetTestId: "five-hour-reset",
       remainingPercent: fiveHour.remainingPercent,
+      resetText: formatReset(fiveHour),
       isLow:
         typeof fiveHour.remainingPercent === "number" &&
         fiveHour.remainingPercent < 20,
@@ -42,7 +46,9 @@
       label: "1 周",
       ariaLabel: "1周额度",
       valueTestId: "weekly-value",
+      resetTestId: "weekly-reset",
       remainingPercent: weekly.remainingPercent,
+      resetText: formatReset(weekly),
       isLow:
         typeof weekly.remainingPercent === "number" &&
         weekly.remainingPercent < 20,
@@ -55,7 +61,7 @@
     appState?.statusMessage ??
     null;
   $: busy = loading || refreshing;
-  $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)}；1周 ${formatPercent(weekly.remainingPercent)}${statusText ? `；${statusText}` : ""}`;
+  $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)} 刷新 ${formatReset(fiveHour)}；1周 ${formatPercent(weekly.remainingPercent)} 刷新 ${formatReset(weekly)}${statusText ? `；${statusText}` : ""}`;
 
   async function startWindowDrag(event: PointerEvent): Promise<void> {
     if (event.button !== 0 || !hasTauriRuntime()) {
@@ -102,9 +108,18 @@
         <span class="quota-label" aria-hidden="true" data-tauri-drag-region>
           {row.label}
         </span>
-        <strong data-testid={row.valueTestId} data-tauri-drag-region>
-          {formatPercent(row.remainingPercent)}
-        </strong>
+        <span class="quota-metrics" data-tauri-drag-region>
+          <strong data-testid={row.valueTestId} data-tauri-drag-region>
+            {formatPercent(row.remainingPercent)}
+          </strong>
+          <span
+            class="reset-time"
+            data-testid={row.resetTestId}
+            data-tauri-drag-region
+          >
+            {row.resetText}
+          </span>
+        </span>
       </div>
     {/each}
   </section>
@@ -227,9 +242,9 @@
   .quota-row {
     min-width: 0;
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(68px, 1fr) auto;
     align-items: center;
-    column-gap: 14px;
+    column-gap: 12px;
     padding-left: 30px;
   }
 
@@ -244,13 +259,32 @@
     white-space: nowrap;
   }
 
-  strong {
+  .quota-metrics {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 44px minmax(74px, auto);
+    align-items: baseline;
+    column-gap: 10px;
+    justify-content: end;
+  }
+
+  strong,
+  .reset-time {
     color: #7b838a;
     font-family: "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
     font-size: 0.86rem;
     font-variant-numeric: tabular-nums;
     font-weight: 520;
     line-height: 1;
+  }
+
+  .reset-time {
+    overflow: hidden;
+    max-width: 96px;
+    font-weight: 430;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .quota-row.low strong {

@@ -1,7 +1,5 @@
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(feature = "desktop")]
-mod floating_bar;
 mod models;
 mod startup;
 mod status_parser;
@@ -25,7 +23,6 @@ pub fn run() {
         if let Ok(state) = commands::load_app_state(app.handle()) {
             tray::sync_from_app_state(app.handle(), &state);
         }
-        floating_bar::position_main_window(app.handle());
         commands::prewarm_codex_status_session();
         commands::start_auto_refresh(app.handle().clone());
         updates::check_on_startup(app.handle().clone());

@@ -51,12 +51,13 @@ describe("QuotaDashboard", () => {
     expect(screen.getByTestId("weekly-value").textContent).toContain("--");
   });
 
-  it("does not show reset timing in the status bar", () => {
+  it("shows reset timing for both quota windows", () => {
     render(QuotaDashboard, { props: { appState } });
 
-    expect(screen.queryByTestId("status-message")).toBeNull();
-    expect(screen.queryByText(/周更/)).toBeNull();
-    expect(screen.queryByText(/06\/23/)).toBeNull();
+    expect(screen.getByTestId("five-hour-reset").textContent).toContain(
+      "2小时15分钟后",
+    );
+    expect(screen.getByTestId("weekly-reset").textContent).toContain("06/23");
   });
 
   it("does not render a status-bar refresh button", () => {
