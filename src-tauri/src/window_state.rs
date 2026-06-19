@@ -9,6 +9,7 @@ const STATE_FILE_NAME: &str = "quotadock-window-state.json";
 const STATE_VERSION: u8 = 1;
 const MAIN_WINDOW_LABEL: &str = "main";
 const EDGE_MARGIN: i32 = 12;
+const SNAP_THRESHOLD: i32 = 18;
 const MIN_VISIBLE_WIDTH: i64 = 64;
 const MIN_VISIBLE_HEIGHT: i64 = 48;
 
@@ -32,6 +33,12 @@ struct WorkArea {
     height: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SnapCandidate {
+    position: PhysicalPosition<i32>,
+    distance: i64,
+}
+
 pub fn restore_main_window(app: &AppHandle<Wry>) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
@@ -46,6 +53,7 @@ pub fn restore_main_window(app: &AppHandle<Wry>) {
 }
 
 pub fn save_main_window_position(window: &Window<Wry>, position: PhysicalPosition<i32>) {
+    let position = snap_window_position(window, position).unwrap_or(position);
     if let Err(error) = save_position(window.app_handle(), position) {
         eprintln!("save main window position failed: {error}");
     }
@@ -175,6 +183,98 @@ fn position_is_visible_in_work_area(
     visible_width >= MIN_VISIBLE_WIDTH && visible_height >= MIN_VISIBLE_HEIGHT
 }
 
+fn snap_window_position(
+    window: &Window<Wry>,
+    position: PhysicalPosition<i32>,
+) -> Option<PhysicalPosition<i32>> {
+    let size = window.outer_size().ok()?;
+    let monitors = window.available_monitors().ok()?;
+    snap_to_nearest_work_area_edge(position, size, &monitors)
+        .map(|candidate| candidate.position)
+        .inspect(|snapped| {
+            if *snapped != position {
+                let _ = window.set_position(Position::Physical(*snapped));
+            }
+        })
+}
+
+fn snap_to_nearest_work_area_edge(
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    monitors: &[Monitor],
+) -> Option<SnapCandidate> {
+    monitors
+        .iter()
+        .filter_map(|monitor| {
+            snap_to_work_area_edge(position, size, work_area_from_monitor(monitor))
+        })
+        .min_by_key(|candidate| candidate.distance)
+}
+
+fn snap_to_work_area_edge(
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    work_area: WorkArea,
+) -> Option<SnapCandidate> {
+    let left = i64::from(position.x);
+    let top = i64::from(position.y);
+    let width = i64::from(size.width);
+    let height = i64::from(size.height);
+    let area_left = i64::from(work_area.x);
+    let area_top = i64::from(work_area.y);
+    let area_right = area_left + i64::from(work_area.width);
+    let area_bottom = area_top + i64::from(work_area.height);
+
+    let mut x = left;
+    let mut y = top;
+    let mut distance = 0_i64;
+    let mut snapped = false;
+
+    if let Some((snapped_x, edge_distance)) =
+        nearest_axis_snap(left, left + width, area_left, area_right, width)
+    {
+        x = snapped_x;
+        distance += edge_distance;
+        snapped = true;
+    }
+    if let Some((snapped_y, edge_distance)) =
+        nearest_axis_snap(top, top + height, area_top, area_bottom, height)
+    {
+        y = snapped_y;
+        distance += edge_distance;
+        snapped = true;
+    }
+
+    snapped.then_some(SnapCandidate {
+        position: PhysicalPosition::new(i32_from_i64(x), i32_from_i64(y)),
+        distance,
+    })
+}
+
+fn nearest_axis_snap(
+    start: i64,
+    end: i64,
+    area_start: i64,
+    area_end: i64,
+    span: i64,
+) -> Option<(i64, i64)> {
+    let start_distance = (start - area_start).abs();
+    let end_distance = (end - area_end).abs();
+    let threshold = i64::from(SNAP_THRESHOLD);
+
+    match (start_distance <= threshold, end_distance <= threshold) {
+        (true, true) if start_distance <= end_distance => Some((area_start, start_distance)),
+        (true, true) => Some((area_end - span, end_distance)),
+        (true, false) => Some((area_start, start_distance)),
+        (false, true) => Some((area_end - span, end_distance)),
+        (false, false) => None,
+    }
+}
+
+fn i32_from_i64(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 fn bottom_right_position(work_area: WorkArea, size: PhysicalSize<u32>) -> PhysicalPosition<i32> {
     let width = i32::try_from(size.width).unwrap_or(i32::MAX);
     let height = i32::try_from(size.height).unwrap_or(i32::MAX);
@@ -199,7 +299,10 @@ fn work_area_from_monitor(monitor: &Monitor) -> WorkArea {
 
 #[cfg(test)]
 mod tests {
-    use super::{bottom_right_position, position_is_visible_in_work_area, WorkArea, EDGE_MARGIN};
+    use super::{
+        bottom_right_position, position_is_visible_in_work_area, snap_to_work_area_edge, WorkArea,
+        EDGE_MARGIN,
+    };
     use tauri::{PhysicalPosition, PhysicalSize};
 
     #[test]
@@ -260,5 +363,54 @@ mod tests {
         let position = PhysicalPosition::new(2200, 100);
 
         assert!(!position_is_visible_in_work_area(position, size, work_area));
+    }
+
+    #[test]
+    fn position_near_left_edge_snaps_to_work_area_left() {
+        let work_area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let size = PhysicalSize::new(276, 76);
+        let position = PhysicalPosition::new(14, 180);
+
+        let snapped = snap_to_work_area_edge(position, size, work_area).unwrap();
+
+        assert_eq!(snapped.position, PhysicalPosition::new(0, 180));
+    }
+
+    #[test]
+    fn position_near_right_and_bottom_edges_snaps_to_corner() {
+        let work_area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let size = PhysicalSize::new(276, 76);
+        let position = PhysicalPosition::new(1920 - 276 - 8, 1040 - 76 - 12);
+
+        let snapped = snap_to_work_area_edge(position, size, work_area).unwrap();
+
+        assert_eq!(
+            snapped.position,
+            PhysicalPosition::new(1920 - 276, 1040 - 76)
+        );
+    }
+
+    #[test]
+    fn position_away_from_edges_does_not_snap() {
+        let work_area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let size = PhysicalSize::new(276, 76);
+        let position = PhysicalPosition::new(120, 180);
+
+        assert!(snap_to_work_area_edge(position, size, work_area).is_none());
     }
 }

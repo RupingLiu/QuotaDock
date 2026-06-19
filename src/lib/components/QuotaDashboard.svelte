@@ -171,7 +171,7 @@
     height: 100%;
     display: grid;
     place-items: stretch;
-    padding: 5px;
+    padding: 4px;
     overflow: hidden;
     background: transparent;
   }
@@ -183,12 +183,12 @@
     display: grid;
     grid-template-rows: repeat(2, minmax(0, 1fr));
     gap: 0;
-    padding: 12px 14px 12px 12px;
+    padding: 8px 12px 8px 10px;
     border: 1px solid rgba(133, 154, 162, 0.18);
-    border-radius: 10px;
+    border-radius: 9px;
     background: rgba(252, 253, 252, 0.96);
     box-shadow:
-      0 12px 24px rgba(43, 59, 68, 0.12),
+      0 10px 20px rgba(43, 59, 68, 0.11),
       0 1px 2px rgba(43, 59, 68, 0.08),
       inset 0 1px 0 rgba(255, 255, 255, 0.92);
     backdrop-filter: blur(18px) saturate(1.08);
@@ -201,8 +201,8 @@
 
   .quota-icon {
     position: relative;
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
     border-radius: 999px;
     background:
       radial-gradient(circle at center, #fbfcfc 0 5px, transparent 5.5px),
@@ -224,19 +224,19 @@
   .quota-row {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(74px, 1fr) auto;
+    grid-template-columns: minmax(68px, 1fr) auto;
     align-items: center;
-    column-gap: 12px;
+    column-gap: 10px;
   }
 
   .quota-label {
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
     overflow: hidden;
     color: #1d2a31;
-    font-size: 0.94rem;
+    font-size: 0.88rem;
     font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
@@ -244,15 +244,15 @@
   }
 
   .quota-label:not(.first) {
-    padding-left: 23px;
+    padding-left: 21px;
   }
 
   .quota-metrics {
     min-width: 0;
     display: grid;
-    grid-template-columns: 42px minmax(100px, auto);
+    grid-template-columns: 36px minmax(96px, auto);
     align-items: baseline;
-    column-gap: 10px;
+    column-gap: 8px;
     justify-content: end;
   }
 
@@ -262,7 +262,7 @@
     font-family:
       "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
       "Microsoft YaHei", sans-serif;
-    font-size: 0.88rem;
+    font-size: 0.84rem;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
     font-weight: 540;
@@ -271,7 +271,7 @@
 
   .reset-time {
     overflow: hidden;
-    max-width: 110px;
+    max-width: 102px;
     font-weight: 450;
     text-align: right;
     text-overflow: ellipsis;
