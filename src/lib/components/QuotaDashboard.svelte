@@ -217,7 +217,7 @@
     height: 100%;
     display: grid;
     place-items: stretch;
-    padding: 3px;
+    padding: 2px;
     overflow: hidden;
     background: transparent;
   }
@@ -227,9 +227,10 @@
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
-    gap: 0;
-    padding: 5px 9px 5px 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: center;
+    column-gap: 8px;
+    padding: 3px 9px 3px 8px;
     border: 1px solid rgba(133, 154, 162, 0.18);
     border-radius: 8px;
     background: rgba(252, 253, 252, 0.96);
@@ -269,20 +270,26 @@
 
   .quota-row {
     min-width: 0;
-    display: grid;
-    grid-template-columns: minmax(52px, 1fr) auto;
+    height: 100%;
+    display: flex;
     align-items: center;
-    column-gap: 6px;
+    gap: 5px;
+  }
+
+  .quota-row + .quota-row {
+    border-left: 1px solid rgba(133, 154, 162, 0.22);
+    padding-left: 8px;
   }
 
   .quota-label {
     min-width: 0;
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     overflow: hidden;
     color: #1d2a31;
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
@@ -290,16 +297,17 @@
   }
 
   .quota-label:not(.first) {
-    padding-left: 17px;
+    padding-left: 0;
   }
 
   .quota-metrics {
     min-width: 0;
+    flex: 1 1 auto;
     display: grid;
-    grid-template-columns: 30px minmax(78px, auto);
+    grid-template-columns: 28px minmax(0, 1fr);
     align-items: baseline;
-    column-gap: 5px;
-    justify-content: end;
+    column-gap: 4px;
+    justify-content: stretch;
   }
 
   strong,
@@ -308,7 +316,7 @@
     font-family:
       "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
       "Microsoft YaHei", sans-serif;
-    font-size: 0.76rem;
+    font-size: 0.72rem;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
     font-weight: 540;
@@ -317,7 +325,7 @@
 
   .reset-time {
     overflow: hidden;
-    max-width: 82px;
+    max-width: 78px;
     font-weight: 450;
     text-align: right;
     text-overflow: ellipsis;
