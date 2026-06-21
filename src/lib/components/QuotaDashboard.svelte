@@ -273,7 +273,7 @@
     gap: 3px;
     overflow: hidden;
     color: #1d2a31;
-    font-size: 0.58rem;
+    font-size: 0.62rem;
     font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
@@ -297,7 +297,7 @@
     font-family:
       "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
       "Microsoft YaHei", sans-serif;
-    font-size: 0.58rem;
+    font-size: 0.62rem;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
     font-weight: 540;
@@ -312,7 +312,7 @@
     font-family:
       "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
       "Microsoft YaHei", sans-serif;
-    font-size: 0.5rem;
+    font-size: 0.53rem;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
     font-weight: 450;
