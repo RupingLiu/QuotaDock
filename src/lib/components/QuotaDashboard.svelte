@@ -223,7 +223,7 @@
     height: 100%;
     display: grid;
     place-items: stretch;
-    padding: 1px;
+    padding: 0;
     overflow: hidden;
     background: transparent;
   }
@@ -235,16 +235,16 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: center;
-    column-gap: 5px;
-    padding: 2px 6px;
+    column-gap: 4px;
+    padding: 0 5px;
     border: 1px solid rgba(133, 154, 162, 0.18);
-    border-radius: 7px;
+    border-radius: 5px;
     background: rgba(252, 253, 252, 0.96);
     box-shadow:
-      0 5px 10px rgba(43, 59, 68, 0.1),
-      0 1px 2px rgba(43, 59, 68, 0.08),
+      0 2px 5px rgba(43, 59, 68, 0.08),
+      0 1px 1px rgba(43, 59, 68, 0.07),
       inset 0 1px 0 rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(12px) saturate(1.05);
+    backdrop-filter: blur(9px) saturate(1.03);
     cursor: move;
   }
 
@@ -257,12 +257,12 @@
     height: 100%;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
   }
 
   .quota-row + .quota-row {
     border-left: 1px solid rgba(133, 154, 162, 0.22);
-    padding-left: 6px;
+    padding-left: 5px;
   }
 
   .quota-label {
@@ -270,10 +270,10 @@
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     overflow: hidden;
     color: #1d2a31;
-    font-size: 0.68rem;
+    font-size: 0.58rem;
     font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
@@ -287,20 +287,17 @@
   .quota-metrics {
     min-width: 0;
     flex: 1 1 auto;
-    display: grid;
-    grid-template-columns: 27px minmax(0, 1fr);
+    display: flex;
     align-items: baseline;
-    column-gap: 3px;
-    justify-content: stretch;
+    gap: 3px;
   }
 
-  strong,
-  .reset-time {
+  strong {
     color: #687781;
     font-family:
       "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
       "Microsoft YaHei", sans-serif;
-    font-size: 0.68rem;
+    font-size: 0.58rem;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
     font-weight: 540;
@@ -308,10 +305,18 @@
   }
 
   .reset-time {
+    min-width: 0;
+    max-width: 56px;
     overflow: hidden;
-    max-width: 64px;
+    color: #687781;
+    font-family:
+      "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+      "Microsoft YaHei", sans-serif;
+    font-size: 0.5rem;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
     font-weight: 450;
-    text-align: right;
+    line-height: 1;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

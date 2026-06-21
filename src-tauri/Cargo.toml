@@ -1,6 +1,6 @@
 [package]
 name = "quotadock"
-version = "0.2.17"
+version = "0.2.18"
 description = "Windows-first Codex usage utility shell."
 authors = ["Ruping Liu"]
 edition = "2021"
