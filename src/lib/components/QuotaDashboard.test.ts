@@ -74,9 +74,9 @@ describe("QuotaDashboard", () => {
     render(QuotaDashboard, { props: { appState } });
 
     expect(screen.getByTestId("five-hour-reset").textContent).toContain(
-      "2小时15分钟后",
+      "2h15m",
     );
-    expect(screen.getByTestId("weekly-reset").textContent).toContain("6月23日");
+    expect(screen.getByTestId("weekly-reset").textContent).toContain("6/23");
   });
 
   it("does not render a status-bar refresh button", () => {
