@@ -217,7 +217,7 @@
     height: 100%;
     display: grid;
     place-items: stretch;
-    padding: 4px;
+    padding: 3px;
     overflow: hidden;
     background: transparent;
   }
@@ -229,15 +229,15 @@
     display: grid;
     grid-template-rows: repeat(2, minmax(0, 1fr));
     gap: 0;
-    padding: 8px 12px 8px 10px;
+    padding: 5px 9px 5px 8px;
     border: 1px solid rgba(133, 154, 162, 0.18);
-    border-radius: 9px;
+    border-radius: 8px;
     background: rgba(252, 253, 252, 0.96);
     box-shadow:
-      0 10px 20px rgba(43, 59, 68, 0.11),
+      0 8px 14px rgba(43, 59, 68, 0.1),
       0 1px 2px rgba(43, 59, 68, 0.08),
       inset 0 1px 0 rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(18px) saturate(1.08);
+    backdrop-filter: blur(14px) saturate(1.06);
     cursor: move;
   }
 
@@ -247,11 +247,11 @@
 
   .quota-icon {
     position: relative;
-    width: 15px;
-    height: 15px;
+    width: 12px;
+    height: 12px;
     border-radius: 999px;
     background:
-      radial-gradient(circle at center, #fbfcfc 0 5px, transparent 5.5px),
+      radial-gradient(circle at center, #fbfcfc 0 4px, transparent 4.5px),
       conic-gradient(from 220deg, #168f95 0 68%, rgba(22, 143, 149, 0.16) 68% 100%);
   }
 
@@ -260,8 +260,8 @@
     position: absolute;
     right: 1px;
     bottom: 1px;
-    width: 4px;
-    height: 4px;
+    width: 3px;
+    height: 3px;
     border-radius: 999px;
     background: #ebb46b;
     box-shadow: 0 0 0 2px rgba(251, 252, 252, 0.9);
@@ -270,19 +270,19 @@
   .quota-row {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(68px, 1fr) auto;
+    grid-template-columns: minmax(52px, 1fr) auto;
     align-items: center;
-    column-gap: 10px;
+    column-gap: 6px;
   }
 
   .quota-label {
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     overflow: hidden;
     color: #1d2a31;
-    font-size: 0.88rem;
+    font-size: 0.78rem;
     font-weight: 640;
     line-height: 1;
     text-overflow: ellipsis;
@@ -290,15 +290,15 @@
   }
 
   .quota-label:not(.first) {
-    padding-left: 21px;
+    padding-left: 17px;
   }
 
   .quota-metrics {
     min-width: 0;
     display: grid;
-    grid-template-columns: 36px minmax(96px, auto);
+    grid-template-columns: 30px minmax(78px, auto);
     align-items: baseline;
-    column-gap: 8px;
+    column-gap: 5px;
     justify-content: end;
   }
 
@@ -308,7 +308,7 @@
     font-family:
       "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
       "Microsoft YaHei", sans-serif;
-    font-size: 0.84rem;
+    font-size: 0.76rem;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
     font-weight: 540;
@@ -317,7 +317,7 @@
 
   .reset-time {
     overflow: hidden;
-    max-width: 102px;
+    max-width: 82px;
     font-weight: 450;
     text-align: right;
     text-overflow: ellipsis;

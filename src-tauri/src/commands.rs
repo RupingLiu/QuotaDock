@@ -13,7 +13,12 @@ use tauri::{App, AppHandle, Emitter, Manager};
 
 pub const USAGE_STATE_CHANGED_EVENT: &str = "usage-state-changed";
 const AUTO_FIRST_REFRESH_DELAY: Duration = Duration::from_secs(10);
-const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const AUTO_BASE_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const AUTO_LOW_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const AUTO_POST_RESET_REFRESH_DELAY: Duration = Duration::from_secs(30);
+const AUTO_RESET_WATCH_WINDOW: Duration = Duration::from_secs(10 * 60);
+const AUTO_MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(30 * 60);
+const LOW_USAGE_THRESHOLD_PERCENT: u8 = 20;
 
 #[derive(Clone, Default)]
 pub struct RefreshCoordinator {
@@ -65,15 +70,86 @@ pub fn start_auto_refresh(app: AppHandle) {
     let _ = thread::Builder::new()
         .name("quotadock-auto-refresh".to_string())
         .spawn(move || {
+            let mut consecutive_failures = 0;
             thread::sleep(AUTO_FIRST_REFRESH_DELAY);
             loop {
                 let refresh_app = app.clone();
-                tauri::async_runtime::block_on(async move {
-                    let _ = refresh_usage_internal(refresh_app, RefreshOrigin::Automatic).await;
+                let outcome = tauri::async_runtime::block_on(async move {
+                    refresh_usage_internal(refresh_app, RefreshOrigin::Automatic).await
                 });
-                thread::sleep(AUTO_REFRESH_INTERVAL);
+                let schedule = next_auto_refresh_schedule(&outcome, consecutive_failures);
+                consecutive_failures = schedule.consecutive_failures;
+                thread::sleep(schedule.delay);
             }
         });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoRefreshSchedule {
+    delay: Duration,
+    consecutive_failures: u32,
+}
+
+fn next_auto_refresh_schedule(
+    outcome: &Result<RefreshUsageResult, String>,
+    previous_failures: u32,
+) -> AutoRefreshSchedule {
+    match outcome {
+        Ok(result) if result.updated => AutoRefreshSchedule {
+            delay: adaptive_refresh_interval(&result.app_state),
+            consecutive_failures: 0,
+        },
+        Ok(_) | Err(_) => {
+            let consecutive_failures = previous_failures.saturating_add(1);
+            AutoRefreshSchedule {
+                delay: failure_backoff_interval(consecutive_failures),
+                consecutive_failures,
+            }
+        }
+    }
+}
+
+fn adaptive_refresh_interval(state: &AppState) -> Duration {
+    let Some(snapshot) = &state.latest_snapshot else {
+        return AUTO_BASE_REFRESH_INTERVAL;
+    };
+
+    let mut delay = AUTO_BASE_REFRESH_INTERVAL;
+    if is_low_usage_snapshot(snapshot) {
+        delay = delay.min(AUTO_LOW_USAGE_REFRESH_INTERVAL);
+    }
+    if let Some(reset_delay) = imminent_reset_refresh_interval(snapshot) {
+        delay = delay.min(reset_delay);
+    }
+    delay
+}
+
+fn is_low_usage_snapshot(snapshot: &QuotaSnapshot) -> bool {
+    [&snapshot.five_hour, &snapshot.weekly]
+        .iter()
+        .any(|reading| {
+            reading
+                .remaining_percent
+                .is_some_and(|percent| percent <= LOW_USAGE_THRESHOLD_PERCENT)
+        })
+}
+
+fn imminent_reset_refresh_interval(snapshot: &QuotaSnapshot) -> Option<Duration> {
+    [&snapshot.five_hour, &snapshot.weekly]
+        .iter()
+        .filter_map(|reading| reading.reset_countdown_seconds)
+        .filter(|seconds| *seconds <= AUTO_RESET_WATCH_WINDOW.as_secs() as i64)
+        .map(|seconds| Duration::from_secs(seconds.max(0) as u64) + AUTO_POST_RESET_REFRESH_DELAY)
+        .min()
+}
+
+fn failure_backoff_interval(consecutive_failures: u32) -> Duration {
+    let multiplier = 1_u64 << consecutive_failures.saturating_sub(1).min(3);
+    let seconds = AUTO_BASE_REFRESH_INTERVAL
+        .as_secs()
+        .saturating_mul(multiplier)
+        .min(AUTO_MAX_FAILURE_BACKOFF.as_secs());
+    Duration::from_secs(seconds)
 }
 
 #[tauri::command]
@@ -1400,7 +1476,60 @@ fn to_command_error(error: StoreError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::command_list_contains;
+    use crate::commands::{
+        adaptive_refresh_interval, command_list_contains, failure_backoff_interval,
+        next_auto_refresh_schedule, AUTO_BASE_REFRESH_INTERVAL, AUTO_LOW_USAGE_REFRESH_INTERVAL,
+        AUTO_POST_RESET_REFRESH_DELAY, AUTO_RESET_WATCH_WINDOW,
+    };
+    use crate::models::{
+        AppState, QuotaReading, QuotaSnapshot, RefreshUsageResult, SnapshotSource, StorageStatus,
+        STATE_VERSION,
+    };
+    use std::time::Duration;
+
+    fn app_state(snapshot: QuotaSnapshot) -> AppState {
+        AppState {
+            version: STATE_VERSION,
+            latest_snapshot: Some(snapshot),
+            storage_status: StorageStatus::Ready,
+            storage_path: None,
+            backup_path: None,
+            status_message: "已通过 Codex CLI 更新额度。".to_string(),
+        }
+    }
+
+    fn refresh_result(snapshot: QuotaSnapshot) -> RefreshUsageResult {
+        RefreshUsageResult {
+            app_state: app_state(snapshot),
+            updated: true,
+            message: "已通过 Codex CLI 更新额度。".to_string(),
+        }
+    }
+
+    fn snapshot(
+        five_hour_percent: u8,
+        weekly_percent: u8,
+        reset_countdown_seconds: Option<i64>,
+    ) -> QuotaSnapshot {
+        QuotaSnapshot {
+            id: "snap-1".to_string(),
+            source: SnapshotSource::CodexCli,
+            captured_at: "unix:1000".to_string(),
+            five_hour: QuotaReading {
+                remaining_percent: Some(five_hour_percent),
+                reset_at: None,
+                reset_countdown_seconds,
+            },
+            weekly: QuotaReading {
+                remaining_percent: Some(weekly_percent),
+                reset_at: None,
+                reset_countdown_seconds: None,
+            },
+            raw_text: String::new(),
+            status_message: "已通过 Codex CLI 更新额度。".to_string(),
+            warnings: Vec::new(),
+        }
+    }
 
     #[test]
     fn detects_usage_command_as_top_level_command_only() {
@@ -1429,6 +1558,83 @@ mod tests {
         let output = "5h limit: [======] 44% left (resets 22:04)\nWeekly limit: [======] 59% left (resets 07:00 on 25 Jun)";
 
         assert!(super::codex_status_output_ready(output));
+    }
+
+    #[test]
+    fn auto_refresh_keeps_base_interval_for_healthy_usage() {
+        let state = app_state(snapshot(75, 64, Some(3600)));
+
+        assert_eq!(
+            adaptive_refresh_interval(&state),
+            AUTO_BASE_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn auto_refresh_accelerates_when_usage_is_low() {
+        let outcome = Ok(refresh_result(snapshot(20, 64, Some(3600))));
+
+        let schedule = next_auto_refresh_schedule(&outcome, 2);
+
+        assert_eq!(schedule.delay, AUTO_LOW_USAGE_REFRESH_INTERVAL);
+        assert_eq!(schedule.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn auto_refresh_schedules_after_imminent_reset() {
+        let reset_in = Duration::from_secs(42);
+        let state = app_state(snapshot(75, 64, Some(reset_in.as_secs() as i64)));
+
+        assert_eq!(
+            adaptive_refresh_interval(&state),
+            reset_in + AUTO_POST_RESET_REFRESH_DELAY
+        );
+    }
+
+    #[test]
+    fn auto_refresh_ignores_distant_reset_countdown() {
+        let reset_after_watch_window = AUTO_RESET_WATCH_WINDOW + Duration::from_secs(1);
+        let state = app_state(snapshot(
+            75,
+            64,
+            Some(reset_after_watch_window.as_secs() as i64),
+        ));
+
+        assert_eq!(
+            adaptive_refresh_interval(&state),
+            AUTO_BASE_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn auto_refresh_uses_failure_backoff_for_unsuccessful_results() {
+        let state = AppState {
+            version: STATE_VERSION,
+            latest_snapshot: Some(snapshot(10, 64, Some(30))),
+            storage_status: StorageStatus::Ready,
+            storage_path: None,
+            backup_path: None,
+            status_message: "Codex CLI 额度查询失败，请稍后重试。".to_string(),
+        };
+        let outcome = Ok(RefreshUsageResult {
+            app_state: state,
+            updated: false,
+            message: "Codex CLI 额度查询失败，请稍后重试。".to_string(),
+        });
+
+        let schedule = next_auto_refresh_schedule(&outcome, 1);
+
+        assert_eq!(schedule.delay, Duration::from_secs(10 * 60));
+        assert_eq!(schedule.consecutive_failures, 2);
+    }
+
+    #[test]
+    fn failure_backoff_caps_at_thirty_minutes() {
+        assert_eq!(failure_backoff_interval(1), Duration::from_secs(5 * 60));
+        assert_eq!(failure_backoff_interval(2), Duration::from_secs(10 * 60));
+        assert_eq!(failure_backoff_interval(3), Duration::from_secs(20 * 60));
+        assert_eq!(failure_backoff_interval(4), Duration::from_secs(30 * 60));
+        assert_eq!(failure_backoff_interval(8), Duration::from_secs(30 * 60));
     }
 
     #[test]

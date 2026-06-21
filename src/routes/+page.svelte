@@ -8,17 +8,38 @@
   const usage = createUsageState();
 
   onMount(() => {
+    const canRefresh = hasTauriRuntime();
     const unlisten = hasTauriRuntime()
       ? listen<RefreshUsageResult>("usage-state-changed", (event) => {
           usage.applyRefreshResult(event.payload);
         })
       : null;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void usage.refreshIfStale();
+      }
+    };
+    const refreshOnFocus = () => {
+      void usage.refreshIfStale();
+    };
 
-    void usage.load();
+    void usage.load().then(() => {
+      if (canRefresh) {
+        void usage.refreshIfStale();
+      }
+    });
+    if (canRefresh) {
+      document.addEventListener("visibilitychange", refreshIfVisible);
+      window.addEventListener("focus", refreshOnFocus);
+    }
 
     return () => {
       if (unlisten) {
         void unlisten.then((dispose) => dispose());
+      }
+      if (canRefresh) {
+        document.removeEventListener("visibilitychange", refreshIfVisible);
+        window.removeEventListener("focus", refreshOnFocus);
       }
     };
   });
