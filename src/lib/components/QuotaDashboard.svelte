@@ -306,7 +306,7 @@
 
   .reset-time {
     min-width: 0;
-    max-width: 56px;
+    max-width: 64px;
     overflow: hidden;
     color: #687781;
     font-family:
