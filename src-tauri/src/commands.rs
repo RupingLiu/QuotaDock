@@ -334,7 +334,8 @@ pub fn prewarm_codex_status_session() {
 #[cfg(windows)]
 mod windows_conpty {
     use super::{
-        codex_prompt_ready, codex_status_output_ready, is_cmd_shim, should_send_status_command,
+        codex_status_output_ready, is_cmd_shim, should_send_status_command,
+        status_command_waiting_for_enter,
     };
     use std::ffi::{c_void, OsStr};
     use std::io::{Read, Write};
@@ -342,7 +343,7 @@ mod windows_conpty {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::ptr::{null, null_mut};
-    use std::sync::{mpsc, Mutex, OnceLock};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{
@@ -364,216 +365,15 @@ mod windows_conpty {
     const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
     const PSEUDOCONSOLE_WIN32_INPUT_MODE: u32 = 0x4;
     const PSEUDOCONSOLE_INHERIT_CURSOR: u32 = 0x1;
-    static STATUS_SESSION: OnceLock<Mutex<Option<CodexPtySession>>> = OnceLock::new();
-
     pub fn capture_status(target: &Path, timeout: Duration) -> Result<String, String> {
         if std::env::var_os("QUOTADOCK_STATUS_PROBE_COMMAND").is_some() {
             return capture_status_with_portable_pty(target, timeout);
         }
 
-        match capture_status_with_cached_session(target, timeout) {
-            Ok(output) => Ok(output),
-            Err(error) => {
-                clear_cached_session();
-                Err(error)
-            }
-        }
+        capture_status_with_portable_pty(target, timeout)
     }
 
-    pub fn prewarm_status_session(target: PathBuf) {
-        thread::spawn(move || {
-            let _ = with_cached_session(&target, |session| session.warm(Duration::from_secs(3)));
-        });
-    }
-
-    fn capture_status_with_cached_session(
-        target: &Path,
-        timeout: Duration,
-    ) -> Result<String, String> {
-        with_cached_session(target, |session| session.query(timeout))
-    }
-
-    fn with_cached_session<T>(
-        target: &Path,
-        action: impl FnOnce(&mut CodexPtySession) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let state = STATUS_SESSION.get_or_init(|| Mutex::new(None));
-        let mut guard = state
-            .lock()
-            .map_err(|_| "Codex CLI 查询状态被占用，请稍后重试。".to_string())?;
-        if guard.as_mut().is_none_or(CodexPtySession::has_exited) {
-            *guard = Some(CodexPtySession::start(target)?);
-        }
-        action(guard.as_mut().expect("session exists after start"))
-    }
-
-    fn clear_cached_session() {
-        if let Some(state) = STATUS_SESSION.get() {
-            if let Ok(mut guard) = state.lock() {
-                *guard = None;
-            }
-        }
-    }
-
-    struct CodexPtySession {
-        child: Box<dyn portable_pty::Child + Send + Sync>,
-        _master: Box<dyn portable_pty::MasterPty + Send>,
-        writer: Box<dyn Write + Send>,
-        receiver: mpsc::Receiver<Vec<u8>>,
-        output: Vec<u8>,
-        cursor_reported: bool,
-    }
-
-    impl CodexPtySession {
-        fn start(target: &Path) -> Result<Self, String> {
-            use portable_pty::{native_pty_system, PtySize};
-
-            let pty_system = native_pty_system();
-            let pair = pty_system
-                .openpty(PtySize {
-                    rows: 30,
-                    cols: 100,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(|error| format!("创建 Codex 伪终端失败：{error}"))?;
-
-            let mut command = portable_command(target);
-            if let Some(cwd) = user_profile_path() {
-                command.cwd(cwd);
-            }
-            let child = pair
-                .slave
-                .spawn_command(command)
-                .map_err(|error| format!("启动 Codex CLI 失败：{error}"))?;
-            drop(pair.slave);
-
-            let mut reader = pair
-                .master
-                .try_clone_reader()
-                .map_err(|error| format!("读取 Codex 伪终端失败：{error}"))?;
-            let writer = pair
-                .master
-                .take_writer()
-                .map_err(|error| format!("打开 Codex 输入通道失败：{error}"))?;
-            let (sender, receiver) = mpsc::channel();
-            thread::spawn(move || {
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    match reader.read(&mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            if sender.send(buffer[..read].to_vec()).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-
-            Ok(Self {
-                child,
-                _master: pair.master,
-                writer,
-                receiver,
-                output: Vec::new(),
-                cursor_reported: false,
-            })
-        }
-
-        fn warm(&mut self, timeout: Duration) -> Result<(), String> {
-            let started = Instant::now();
-            loop {
-                self.drain();
-                self.respond_to_cursor_query()?;
-                if codex_prompt_ready(&self.text()) || started.elapsed() >= timeout {
-                    return Ok(());
-                }
-                if self.has_exited() {
-                    return Err("Codex CLI 预热失败，请稍后重试。".to_string());
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-        }
-
-        fn query(&mut self, timeout: Duration) -> Result<String, String> {
-            self.drain();
-            self.respond_to_cursor_query()?;
-            self.output.clear();
-            self.send_status()?;
-
-            let started = Instant::now();
-            let mut sent_count = 1_u8;
-            let mut last_sent = started;
-
-            loop {
-                self.drain();
-                self.respond_to_cursor_query()?;
-                let text = self.text();
-
-                if codex_status_output_ready(&text) {
-                    return Ok(text);
-                }
-
-                if should_send_status_command(
-                    &text,
-                    started,
-                    last_sent,
-                    sent_count,
-                    self.cursor_reported,
-                ) {
-                    self.send_status()?;
-                    sent_count += 1;
-                    last_sent = Instant::now();
-                }
-
-                if self.has_exited() {
-                    return Err("Codex CLI /status 自动查询失败，请稍后重试。".to_string());
-                }
-                if started.elapsed() > timeout {
-                    return Err("Codex CLI 查询超时，请稍后重试。".to_string());
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-        }
-
-        fn has_exited(&mut self) -> bool {
-            matches!(self.child.try_wait(), Ok(Some(_)) | Err(_))
-        }
-
-        fn drain(&mut self) {
-            while let Ok(chunk) = self.receiver.try_recv() {
-                self.output.extend_from_slice(&chunk);
-            }
-        }
-
-        fn respond_to_cursor_query(&mut self) -> Result<(), String> {
-            if self.cursor_reported || !self.text().contains("\u{1b}[6n") {
-                return Ok(());
-            }
-            self.writer
-                .write_all(b"\x1b[1;1R")
-                .map_err(|error| format!("回应 Codex 终端查询失败：{error}"))?;
-            self.writer
-                .flush()
-                .map_err(|error| format!("回应 Codex 终端查询失败：{error}"))?;
-            self.cursor_reported = true;
-            Ok(())
-        }
-
-        fn send_status(&mut self) -> Result<(), String> {
-            self.writer
-                .write_all(b"/status\r\n")
-                .map_err(|error| format!("发送 /status 失败：{error}"))?;
-            self.writer
-                .flush()
-                .map_err(|error| format!("发送 /status 失败：{error}"))
-        }
-
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.output).to_string()
-        }
-    }
+    pub fn prewarm_status_session(_target: PathBuf) {}
 
     fn capture_status_with_portable_pty(
         target: &Path,
@@ -660,13 +460,7 @@ mod windows_conpty {
 
         let started = Instant::now();
         let mut output = Vec::new();
-        writer
-            .write_all(b"/status\r\n")
-            .map_err(|error| format!("发送 /status 失败：{error}"))?;
-        writer
-            .flush()
-            .map_err(|error| format!("发送 /status 失败：{error}"))?;
-        let mut sent_count = 1_u8;
+        let mut sent_count = 0_u8;
         let mut last_sent = started;
         let mut cursor_reported = false;
 
@@ -676,12 +470,14 @@ mod windows_conpty {
             respond_to_cursor_query(&mut writer, &text, &mut cursor_reported)?;
 
             if should_send_status_command(&text, started, last_sent, sent_count, cursor_reported) {
-                writer
-                    .write_all(b"/status\r\n")
-                    .map_err(|error| format!("发送 /status 失败：{error}"))?;
-                writer
-                    .flush()
-                    .map_err(|error| format!("发送 /status 失败：{error}"))?;
+                if sent_count == 0 {
+                    output.clear();
+                    write_status_command(&mut writer)?;
+                } else if status_command_waiting_for_enter(&text) {
+                    press_enter(&mut writer)?;
+                } else {
+                    write_status_command(&mut writer)?;
+                }
                 sent_count += 1;
                 last_sent = Instant::now();
             }
@@ -751,6 +547,24 @@ mod windows_conpty {
         Ok(())
     }
 
+    fn write_status_command(writer: &mut Box<dyn Write + Send>) -> Result<(), String> {
+        writer
+            .write_all(b"/status\r")
+            .map_err(|error| format!("发送 /status 失败：{error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("发送 /status 失败：{error}"))
+    }
+
+    fn press_enter(writer: &mut Box<dyn Write + Send>) -> Result<(), String> {
+        writer
+            .write_all(b"\r")
+            .map_err(|error| format!("发送 /status 失败：{error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("发送 /status 失败：{error}"))
+    }
+
     fn portable_command(target: &Path) -> portable_pty::CommandBuilder {
         use portable_pty::CommandBuilder;
 
@@ -759,10 +573,11 @@ mod windows_conpty {
             command.arg("/D");
             command.arg("/C");
             command.arg(override_command);
+            set_terminal_environment(&mut command);
             return command;
         }
 
-        if is_cmd_shim(target) {
+        let mut command = if is_cmd_shim(target) {
             let mut command = CommandBuilder::new("cmd.exe");
             command.arg("/D");
             command.arg("/C");
@@ -777,7 +592,14 @@ mod windows_conpty {
             command.arg("mcp_servers={}");
             command.arg("--no-alt-screen");
             command
-        }
+        };
+        set_terminal_environment(&mut command);
+        command
+    }
+
+    fn set_terminal_environment(command: &mut portable_pty::CommandBuilder) {
+        command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
     }
 
     fn user_profile_path() -> Option<std::path::PathBuf> {
@@ -1271,27 +1093,23 @@ mod windows_conpty {
 }
 
 fn should_send_status_command(
-    output: &str,
+    _output: &str,
     started: Instant,
     last_sent: Instant,
     sent_count: u8,
-    terminal_ready: bool,
+    _terminal_ready: bool,
 ) -> bool {
     if sent_count >= 6 {
         return false;
     }
     if sent_count == 0 {
-        return terminal_ready
-            || started.elapsed() >= Duration::from_millis(250)
-            || codex_prompt_ready(output);
+        return started.elapsed() >= Duration::from_secs(15);
     }
-    last_sent.elapsed() >= Duration::from_secs(1)
+    last_sent.elapsed() >= Duration::from_secs(3)
 }
 
-fn codex_prompt_ready(output: &str) -> bool {
-    let lower = output.to_ascii_lowercase();
-    lower.contains("implement {feature}")
-        || (lower.contains("model:") && lower.contains("directory:"))
+fn status_command_waiting_for_enter(output: &str) -> bool {
+    output.contains("› /status") || output.contains("> /status")
 }
 
 fn codex_status_output_ready(output: &str) -> bool {

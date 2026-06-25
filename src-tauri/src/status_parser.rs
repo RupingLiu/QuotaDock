@@ -596,6 +596,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_wrapped_weekly_reset_from_current_status_panel() {
+        let result = parse(
+            "5h limit:                    [█████████████░░░░░░░] 64% left (resets 14:40)\nWeekly limit:                [████░░░░░░░░░░░░░░░░] 22% left\n                              (resets 10:22 on 28 Jun)\nGPT-5.3-Codex-Spark limit:\n5h limit:                    [████████████████████] 100% left\n                              (resets 19:40)\nWeekly limit:                [████████████████████] 100% left\n                              (resets 14:40 on 2 Jul)",
+        );
+
+        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(64));
+        assert_eq!(result.snapshot.five_hour.reset_at.as_deref(), Some("14:40"));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(22));
+        assert_eq!(
+            result.snapshot.weekly.reset_at.as_deref(),
+            Some("10:22 on 28 Jun")
+        );
+    }
+
+    #[test]
     fn parses_terminal_output_with_ansi_sequences() {
         let result = parse(
             "\u{1b}[36m5h limit:\u{1b}[0m [====] 44% left (resets 22:04)\n\u{1b}[35mWeekly limit:\u{1b}[0m [====] 59% left (resets 07:00 on 25 Jun)",
