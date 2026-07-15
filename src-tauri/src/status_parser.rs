@@ -634,6 +634,26 @@ mod tests {
     }
 
     #[test]
+    fn reports_partial_when_current_status_has_only_weekly_limit() {
+        let result = parse(
+            "Weekly limit: [███████████████████░] 93% left\n                              (resets 13:21 on 22 Jul)\nGPT-5.3-Codex-Spark Weekly limit: [████████████████████] 100% left",
+        );
+
+        assert!(result.snapshot.five_hour.remaining_percent.is_none());
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(93));
+        assert_eq!(
+            result.snapshot.weekly.reset_at.as_deref(),
+            Some("13:21 on 22 Jul")
+        );
+        assert!(result.snapshot.has_any_usage());
+        assert!(result
+            .snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "missing-five-hour"));
+    }
+
+    #[test]
     fn reports_unknown_format() {
         let result = parse("all systems nominal");
 

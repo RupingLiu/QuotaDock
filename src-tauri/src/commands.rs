@@ -334,8 +334,8 @@ pub fn prewarm_codex_status_session() {
 #[cfg(windows)]
 mod windows_conpty {
     use super::{
-        codex_status_output_ready, is_cmd_shim, should_send_status_command,
-        status_command_waiting_for_enter,
+        codex_status_output_ready, codex_update_prompt_visible, is_cmd_shim,
+        should_send_status_command, status_command_waiting_for_enter,
     };
     use std::ffi::{c_void, OsStr};
     use std::io::{Read, Write};
@@ -468,6 +468,14 @@ mod windows_conpty {
             drain_receiver(&receiver, &mut output);
             let text = String::from_utf8_lossy(&output).to_string();
             respond_to_cursor_query(&mut writer, &text, &mut cursor_reported)?;
+
+            if codex_update_prompt_visible(&text) {
+                let _ = child.kill();
+                return Err(
+                    "Codex CLI 正在显示更新提示，已停止自动查询以避免误触更新。请先在终端完成更新或选择跳过后重试。"
+                        .to_string(),
+                );
+            }
 
             if should_send_status_command(&text, started, last_sent, sent_count, cursor_reported) {
                 if sent_count == 0 {
@@ -1093,7 +1101,7 @@ mod windows_conpty {
 }
 
 fn should_send_status_command(
-    _output: &str,
+    output: &str,
     started: Instant,
     last_sent: Instant,
     sent_count: u8,
@@ -1103,9 +1111,21 @@ fn should_send_status_command(
         return false;
     }
     if sent_count == 0 {
-        return started.elapsed() >= Duration::from_secs(15);
+        return started.elapsed() >= Duration::from_secs(15) && codex_prompt_ready(output);
     }
     last_sent.elapsed() >= Duration::from_secs(3)
+}
+
+fn codex_prompt_ready(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("use /skills to list available skills")
+        || lower.contains("implement {feature}")
+        || (lower.contains("model:") && lower.contains("directory:"))
+}
+
+fn codex_update_prompt_visible(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("update available!") && lower.contains("press enter to continue")
 }
 
 fn status_command_waiting_for_enter(output: &str) -> bool {
@@ -1114,8 +1134,7 @@ fn status_command_waiting_for_enter(output: &str) -> bool {
 
 fn codex_status_output_ready(output: &str) -> bool {
     let parsed = parse_status_text_with_source(output, ParseClock::now(), SnapshotSource::CodexCli);
-    parsed.snapshot.five_hour.remaining_percent.is_some()
-        && parsed.snapshot.weekly.remaining_percent.is_some()
+    parsed.snapshot.has_any_usage()
 }
 
 fn command_list_contains(help: &str, command: &str) -> bool {
@@ -1376,6 +1395,36 @@ mod tests {
         let output = "5h limit: [======] 44% left (resets 22:04)\nWeekly limit: [======] 59% left (resets 07:00 on 25 Jun)";
 
         assert!(super::codex_status_output_ready(output));
+    }
+
+    #[test]
+    fn recognizes_weekly_only_interactive_status_output() {
+        let output = "Weekly limit: [===================░] 93% left\n                              (resets 13:21 on 22 Jul)\nGPT-5.3-Codex-Spark Weekly limit: [====================] 100% left";
+
+        assert!(super::codex_status_output_ready(output));
+    }
+
+    #[test]
+    fn waits_for_the_codex_prompt_before_typing_status() {
+        let started = std::time::Instant::now() - Duration::from_secs(15);
+
+        assert!(!super::should_send_status_command(
+            "Update available!\nPress enter to continue",
+            started,
+            started,
+            0,
+            false,
+        ));
+        assert!(super::should_send_status_command(
+            "model: gpt-5\ndirectory: ~\n› Use /skills to list available skills",
+            started,
+            started,
+            0,
+            false,
+        ));
+        assert!(super::codex_update_prompt_visible(
+            "Update available!\nPress enter to continue"
+        ));
     }
 
     #[test]
