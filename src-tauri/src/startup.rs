@@ -140,4 +140,4 @@ mod platform {
     }
 }
 
-pub use platform::{is_enabled, toggle};
+pub use platform::{is_enabled, set_enabled, toggle};

@@ -1,4 +1,4 @@
-use crate::models::AppState;
+use crate::models::{AppState, SettingsPatch};
 use crate::{startup, updates, version};
 use std::sync::Mutex;
 use std::thread;
@@ -8,9 +8,12 @@ use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, LogicalPosition, Manager, Position, Wry};
 
-const MENU_SHOW: &str = "show";
-const MENU_HIDE: &str = "hide";
+const MENU_TOGGLE_VISIBILITY: &str = "toggle_visibility";
+const MENU_DETAILS: &str = "details";
+const MENU_OFFICIAL_USAGE: &str = "official_usage";
 const MENU_STARTUP: &str = "startup";
+const MENU_AUTOMATIC_UPDATES: &str = "automatic_updates";
+const MENU_LOW_QUOTA_NOTIFICATIONS: &str = "low_quota_notifications";
 const MENU_REFRESH_USAGE: &str = "refresh_usage";
 const MENU_CHECK_UPDATES: &str = "check_updates";
 const MENU_STATUS: &str = "status";
@@ -67,10 +70,29 @@ pub fn install(app: &App) -> tauri::Result<()> {
 }
 
 fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
+    let visibility_label = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .filter(|visible| *visible)
+        .map(|_| "隐藏悬浮窗")
+        .unwrap_or("显示 QuotaDock");
     let startup_label = if startup::is_enabled().unwrap_or(false) {
         "开机自启动：已开启"
     } else {
         "开机自启动：已关闭"
+    };
+    let settings = crate::commands::load_app_state(app)
+        .map(|state| state.settings)
+        .unwrap_or_default();
+    let updates_label = if settings.automatic_update_checks {
+        "自动检查更新：已开启"
+    } else {
+        "自动检查更新：已关闭"
+    };
+    let notification_label = if settings.low_quota_notifications {
+        "低额度通知：已开启"
+    } else {
+        "低额度通知：已关闭"
     };
     let status_item = MenuItemBuilder::with_id(MENU_STATUS, status_label)
         .enabled(false)
@@ -81,10 +103,14 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
             .build(app)?;
 
     MenuBuilder::new(app)
-        .text(MENU_SHOW, "显示 QuotaDock")
-        .text(MENU_HIDE, "隐藏悬浮窗")
-        .text(MENU_STARTUP, startup_label)
+        .text(MENU_TOGGLE_VISIBILITY, visibility_label)
+        .text(MENU_DETAILS, "查看详情与趋势")
         .text(MENU_REFRESH_USAGE, "刷新额度")
+        .text(MENU_OFFICIAL_USAGE, "打开官方用量页面")
+        .separator()
+        .text(MENU_STARTUP, startup_label)
+        .text(MENU_AUTOMATIC_UPDATES, updates_label)
+        .text(MENU_LOW_QUOTA_NOTIFICATIONS, notification_label)
         .text(MENU_CHECK_UPDATES, "立即检查更新")
         .item(&status_item)
         .item(&version_item)
@@ -95,11 +121,48 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
 
 fn handle_menu_event(app: &AppHandle, menu_id: &str) {
     match menu_id {
-        MENU_SHOW => show_main_window(app),
-        MENU_HIDE => hide_main_window(app),
+        MENU_TOGGLE_VISIBILITY => toggle_main_window(app),
+        MENU_DETAILS => {
+            if let Err(error) = crate::details::show(app) {
+                set_menu_status_temporarily(app, error);
+            }
+        }
+        MENU_OFFICIAL_USAGE => {
+            if let Err(error) = crate::details::open_official_usage() {
+                set_menu_status_temporarily(app, error);
+            }
+        }
         MENU_STARTUP => {
             if let Err(error) = startup::toggle() {
                 eprintln!("toggle startup failed: {error}");
+            }
+            refresh_menu(app);
+        }
+        MENU_AUTOMATIC_UPDATES => {
+            let enabled = crate::commands::load_app_state(app)
+                .map(|state| !state.settings.automatic_update_checks)
+                .unwrap_or(true);
+            let _ = crate::commands::update_settings(
+                app.clone(),
+                SettingsPatch {
+                    automatic_update_checks: Some(enabled),
+                    low_quota_notifications: None,
+                },
+            );
+            refresh_menu(app);
+        }
+        MENU_LOW_QUOTA_NOTIFICATIONS => {
+            let enabled = crate::commands::load_app_state(app)
+                .map(|state| !state.settings.low_quota_notifications)
+                .unwrap_or(true);
+            if let Err(error) = crate::commands::update_settings(
+                app.clone(),
+                SettingsPatch {
+                    automatic_update_checks: None,
+                    low_quota_notifications: Some(enabled),
+                },
+            ) {
+                set_menu_status_temporarily(app, error);
             }
             refresh_menu(app);
         }
@@ -108,7 +171,10 @@ fn handle_menu_event(app: &AppHandle, menu_id: &str) {
             crate::commands::refresh_usage_from_tray(app.clone());
         }
         MENU_CHECK_UPDATES => updates::check_now(app.clone()),
-        MENU_QUIT => app.exit(0),
+        MENU_QUIT => {
+            crate::window_state::save_main_window_position_for_app(app);
+            app.exit(0);
+        }
         _ => {}
     }
 }
@@ -142,7 +208,7 @@ fn menu_coordinate(value: f64) -> f64 {
     }
 }
 
-fn refresh_menu(app: &AppHandle) {
+pub(crate) fn refresh_menu(app: &AppHandle) {
     let Some(tray) = app.try_state::<TrayState>() else {
         return;
     };
@@ -213,8 +279,22 @@ pub fn show_main_window(app: &AppHandle) {
 
 pub fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        crate::window_state::save_current_main_webview_window_position(&window);
         let _ = window.hide();
     }
+}
+
+fn toggle_main_window(app: &AppHandle) {
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if visible {
+        hide_main_window(app);
+    } else {
+        show_main_window(app);
+    }
+    refresh_menu(app);
 }
 
 fn transparent_fallback_icon() -> Image<'static> {

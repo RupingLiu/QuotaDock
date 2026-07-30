@@ -1,8 +1,16 @@
-use crate::models::{AppState, QuotaSnapshot, StorageStatus, StoredState, STATE_VERSION};
+use crate::models::{
+    AppSettings, AppState, QuotaSnapshot, RecoveryNotice, SettingsPatch, StorageStatus,
+    StoredState, UsageHistoryPoint, STATE_VERSION,
+};
 use std::fmt::{Display, Formatter};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const PREVIOUS_STATE_VERSION: u32 = 2;
+const MAX_HISTORY_POINTS: usize = 672;
+const HISTORY_SAMPLE_INTERVAL_SECONDS: i64 = 15 * 60;
+const MAX_BACKUP_FILES: usize = 3;
 
 #[derive(Debug)]
 pub struct StoreError {
@@ -37,29 +45,41 @@ impl UsageStore {
             Ok(raw) => raw,
             Err(_) => {
                 let backup_path = self.backup_existing_file("corrupt")?;
-                let state = StoredState::default();
+                let state = recovered_state(StorageStatus::Recovered, &backup_path);
                 self.save_state(&state)?;
                 return Ok(self.outcome(state, StorageStatus::Recovered, Some(backup_path)));
             }
         };
-        let state = match serde_json::from_str::<StoredState>(&raw) {
+        let mut state = match serde_json::from_str::<StoredState>(&raw) {
             Ok(state) => state,
             Err(_) => {
                 let backup_path = self.backup_existing_file("corrupt")?;
-                let state = StoredState::default();
+                let state = recovered_state(StorageStatus::Recovered, &backup_path);
                 self.save_state(&state)?;
                 return Ok(self.outcome(state, StorageStatus::Recovered, Some(backup_path)));
             }
         };
 
-        if state.version != STATE_VERSION {
+        if state.version == PREVIOUS_STATE_VERSION {
+            state.version = STATE_VERSION;
+            self.save_state(&state)?;
+        } else if state.version != STATE_VERSION {
             let backup_path = self.backup_existing_file("unsupported")?;
-            let state = StoredState::default();
+            let state = recovered_state(StorageStatus::UnsupportedVersion, &backup_path);
             self.save_state(&state)?;
             return Ok(self.outcome(state, StorageStatus::UnsupportedVersion, Some(backup_path)));
         }
 
-        Ok(self.outcome(state, StorageStatus::Ready, None))
+        let status = state
+            .recovery_notice
+            .as_ref()
+            .map(|notice| notice.status.clone())
+            .unwrap_or(StorageStatus::Ready);
+        let backup_path = state
+            .recovery_notice
+            .as_ref()
+            .map(|notice| PathBuf::from(&notice.backup_path));
+        Ok(self.outcome(state, status, backup_path))
     }
 
     pub fn save_state(&self, state: &StoredState) -> Result<(), StoreError> {
@@ -83,22 +103,42 @@ impl UsageStore {
 
     pub fn save_snapshot(&self, snapshot: QuotaSnapshot) -> Result<LoadOutcome, StoreError> {
         let loaded = self.load()?;
-        let status = mutation_status(&loaded.status);
+        let status = status_after_mutation(&loaded.status);
         let backup_path = loaded.backup_path;
-        let state = StoredState {
-            version: STATE_VERSION,
-            latest_snapshot: Some(snapshot),
-        };
+        let mut state = loaded.state;
+        append_history(&mut state.history, &snapshot);
+        state.version = STATE_VERSION;
+        state.latest_snapshot = Some(snapshot);
         self.save_state(&state)?;
         Ok(self.outcome(state, status, backup_path))
+    }
+
+    pub fn update_settings(&self, patch: SettingsPatch) -> Result<LoadOutcome, StoreError> {
+        let loaded = self.load()?;
+        let status = status_after_mutation(&loaded.status);
+        let backup_path = loaded.backup_path;
+        let mut state = loaded.state;
+        apply_settings_patch(&mut state.settings, patch);
+        self.save_state(&state)?;
+        Ok(self.outcome(state, status, backup_path))
+    }
+
+    pub fn acknowledge_recovery(&self) -> Result<LoadOutcome, StoreError> {
+        let loaded = self.load()?;
+        let mut state = loaded.state;
+        state.recovery_notice = None;
+        self.save_state(&state)?;
+        Ok(self.outcome(state, StorageStatus::Ready, None))
     }
 
     #[cfg(test)]
     pub fn clear_snapshot(&self) -> Result<LoadOutcome, StoreError> {
         let loaded = self.load()?;
-        let status = mutation_status(&loaded.status);
+        let status = status_after_mutation(&loaded.status);
         let backup_path = loaded.backup_path;
-        let state = StoredState::default();
+        let mut state = loaded.state;
+        state.latest_snapshot = None;
+        state.history.clear();
         self.save_state(&state)?;
         Ok(self.outcome(state, status, backup_path))
     }
@@ -122,7 +162,41 @@ impl UsageStore {
             .path
             .with_extension(format!("{reason}-{}.bak", unix_nanos()));
         std::fs::copy(&self.path, &backup_path)?;
+        self.prune_old_backups(&backup_path)?;
         Ok(backup_path)
+    }
+
+    fn prune_old_backups(&self, newest: &Path) -> Result<(), StoreError> {
+        let Some(parent) = self.path.parent() else {
+            return Ok(());
+        };
+        let Some(stem) = self.path.file_stem().and_then(|stem| stem.to_str()) else {
+            return Ok(());
+        };
+        let mut backups = std::fs::read_dir(parent)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path != newest
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(stem) && name.ends_with(".bak"))
+            })
+            .filter_map(|path| {
+                let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+                Some((modified, path))
+            })
+            .collect::<Vec<_>>();
+        backups.sort_by_key(|(modified, _)| *modified);
+        let remove_count = backups
+            .len()
+            .saturating_add(1)
+            .saturating_sub(MAX_BACKUP_FILES);
+        for (_, path) in backups.into_iter().take(remove_count) {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
     }
 }
 
@@ -193,12 +267,73 @@ fn atomic_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Resu
     std::fs::rename(from, to)
 }
 
-fn mutation_status(status: &StorageStatus) -> StorageStatus {
+fn status_after_mutation(status: &StorageStatus) -> StorageStatus {
     match status {
         StorageStatus::Recovered => StorageStatus::Recovered,
         StorageStatus::UnsupportedVersion => StorageStatus::UnsupportedVersion,
         StorageStatus::Ready | StorageStatus::Missing => StorageStatus::Ready,
     }
+}
+
+fn recovered_state(status: StorageStatus, backup_path: &Path) -> StoredState {
+    let message = match status {
+        StorageStatus::Recovered => "本地状态文件损坏，已备份并恢复默认状态。",
+        StorageStatus::UnsupportedVersion => "本地状态版本不兼容，已备份并重建状态。",
+        StorageStatus::Ready | StorageStatus::Missing => "本地状态已恢复。",
+    };
+    StoredState {
+        recovery_notice: Some(RecoveryNotice {
+            status,
+            message: message.to_string(),
+            backup_path: backup_path.display().to_string(),
+        }),
+        ..StoredState::default()
+    }
+}
+
+fn apply_settings_patch(settings: &mut AppSettings, patch: SettingsPatch) {
+    if let Some(enabled) = patch.automatic_update_checks {
+        settings.automatic_update_checks = enabled;
+    }
+    if let Some(enabled) = patch.low_quota_notifications {
+        settings.low_quota_notifications = enabled;
+    }
+}
+
+fn append_history(history: &mut Vec<UsageHistoryPoint>, snapshot: &QuotaSnapshot) {
+    if !snapshot.has_any_usage() {
+        return;
+    }
+    let next = UsageHistoryPoint::from(snapshot);
+    if history
+        .last()
+        .is_some_and(|previous| !should_record_history(previous, &next))
+    {
+        return;
+    }
+    history.push(next);
+    if history.len() > MAX_HISTORY_POINTS {
+        history.drain(..history.len() - MAX_HISTORY_POINTS);
+    }
+}
+
+fn should_record_history(previous: &UsageHistoryPoint, next: &UsageHistoryPoint) -> bool {
+    if previous.five_hour_remaining_percent != next.five_hour_remaining_percent
+        || previous.weekly_remaining_percent != next.weekly_remaining_percent
+    {
+        return true;
+    }
+    match (
+        unix_seconds(&previous.captured_at),
+        unix_seconds(&next.captured_at),
+    ) {
+        (Some(previous), Some(next)) => next - previous >= HISTORY_SAMPLE_INTERVAL_SECONDS,
+        _ => previous.captured_at != next.captured_at,
+    }
+}
+
+fn unix_seconds(value: &str) -> Option<i64> {
+    value.strip_prefix("unix:")?.trim().parse().ok()
 }
 
 fn unix_nanos() -> u128 {
@@ -210,7 +345,10 @@ fn unix_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{QuotaReading, QuotaSnapshot, SnapshotSource, StorageStatus, StoredState};
+    use crate::models::{
+        QuotaReading, QuotaSnapshot, SettingsPatch, SnapshotSource, StorageStatus, StoredState,
+        STATE_VERSION,
+    };
     use crate::usage_store::UsageStore;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -260,6 +398,9 @@ mod tests {
                 reset_at: Some("2026-06-23T09:00:00Z".to_string()),
                 reset_countdown_seconds: None,
             },
+            plan_type: None,
+            credits_balance: None,
+            reset_credits_available: None,
             raw_text: "status".to_string(),
             status_message: "已更新 5 小时与 1 周额度。".to_string(),
             warnings: Vec::new(),
@@ -280,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_v2_file_loads_state() {
+    fn valid_current_file_loads_state() {
         let dir = TestDir::new("valid");
         let path = dir.path().join("state.json");
         let store = UsageStore::new(path.clone());
@@ -301,6 +442,48 @@ mod tests {
     }
 
     #[test]
+    fn v2_file_is_migrated_without_losing_snapshot_or_settings() {
+        let dir = TestDir::new("migrate-v2");
+        let path = dir.path().join("state.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "version": 2,
+              "latestSnapshot": {
+                "id": "legacy",
+                "source": "codex-cli",
+                "capturedAt": "unix:1000",
+                "fiveHour": {"remainingPercent": 71, "resetAt": null, "resetCountdownSeconds": null},
+                "weekly": {"remainingPercent": 45, "resetAt": null, "resetCountdownSeconds": null},
+                "rawText": "",
+                "statusMessage": "legacy",
+                "warnings": []
+              }
+            }"#,
+        )
+        .unwrap();
+        let store = UsageStore::new(path.clone());
+
+        let outcome = store.load().unwrap();
+
+        assert_eq!(outcome.status, StorageStatus::Ready);
+        assert_eq!(outcome.state.version, STATE_VERSION);
+        assert_eq!(
+            outcome
+                .state
+                .latest_snapshot
+                .as_ref()
+                .unwrap()
+                .five_hour
+                .remaining_percent,
+            Some(71)
+        );
+        let persisted: StoredState =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(persisted.version, STATE_VERSION);
+    }
+
+    #[test]
     fn corrupt_json_is_backed_up_and_recovered_to_default() {
         let dir = TestDir::new("corrupt");
         let path = dir.path().join("state.json");
@@ -311,7 +494,15 @@ mod tests {
 
         assert_eq!(outcome.status, StorageStatus::Recovered);
         assert!(outcome.backup_path.unwrap().exists());
-        assert_eq!(outcome.state, StoredState::default());
+        assert!(outcome.state.latest_snapshot.is_none());
+        assert_eq!(
+            outcome.state.recovery_notice.as_ref().unwrap().status,
+            StorageStatus::Recovered
+        );
+
+        let still_visible = store.load().unwrap();
+        assert_eq!(still_visible.status, StorageStatus::Recovered);
+        assert!(still_visible.state.recovery_notice.is_some());
     }
 
     #[test]
@@ -325,7 +516,11 @@ mod tests {
 
         assert_eq!(outcome.status, StorageStatus::UnsupportedVersion);
         assert!(outcome.backup_path.unwrap().exists());
-        assert_eq!(outcome.state, StoredState::default());
+        assert!(outcome.state.latest_snapshot.is_none());
+        assert_eq!(
+            outcome.state.recovery_notice.as_ref().unwrap().status,
+            StorageStatus::UnsupportedVersion
+        );
     }
 
     #[test]
@@ -339,5 +534,68 @@ mod tests {
 
         let cleared = store.clear_snapshot().unwrap();
         assert!(cleared.state.latest_snapshot.is_none());
+        assert!(cleared.state.history.is_empty());
+    }
+
+    #[test]
+    fn settings_and_recovery_acknowledgement_are_persisted() {
+        let dir = TestDir::new("settings");
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, "{broken").unwrap();
+        let store = UsageStore::new(path);
+        store.load().unwrap();
+
+        let updated = store
+            .update_settings(SettingsPatch {
+                automatic_update_checks: Some(false),
+                low_quota_notifications: Some(true),
+            })
+            .unwrap();
+        assert!(!updated.state.settings.automatic_update_checks);
+        assert!(updated.state.settings.low_quota_notifications);
+        assert!(updated.state.recovery_notice.is_some());
+
+        let acknowledged = store.acknowledge_recovery().unwrap();
+        assert_eq!(acknowledged.status, StorageStatus::Ready);
+        assert!(acknowledged.state.recovery_notice.is_none());
+        let reloaded = store.load().unwrap();
+        assert!(!reloaded.state.settings.automatic_update_checks);
+        assert!(reloaded.state.settings.low_quota_notifications);
+        assert!(reloaded.state.recovery_notice.is_none());
+    }
+
+    #[test]
+    fn history_samples_changes_and_periodic_unchanged_values() {
+        let dir = TestDir::new("history");
+        let store = UsageStore::new(dir.path().join("state.json"));
+
+        store.save_snapshot(snapshot(72)).unwrap();
+        let unchanged_too_soon = {
+            let mut value = snapshot(72);
+            value.id = "snap-2".to_string();
+            value.captured_at = "unix:1500".to_string();
+            value
+        };
+        store.save_snapshot(unchanged_too_soon).unwrap();
+        let changed = {
+            let mut value = snapshot(71);
+            value.id = "snap-3".to_string();
+            value.captured_at = "unix:1600".to_string();
+            value
+        };
+        store.save_snapshot(changed).unwrap();
+        let periodic = {
+            let mut value = snapshot(71);
+            value.id = "snap-4".to_string();
+            value.captured_at = "unix:2500".to_string();
+            value
+        };
+        let outcome = store.save_snapshot(periodic).unwrap();
+
+        assert_eq!(outcome.state.history.len(), 3);
+        assert_eq!(
+            outcome.state.history[1].five_hour_remaining_percent,
+            Some(71)
+        );
     }
 }

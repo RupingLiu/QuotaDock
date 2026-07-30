@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { formatCapturedAt, formatPercent, formatReset, progressValue } from "$lib/utils/format";
+import {
+  capturedAtToEpochMs,
+  formatCapturedAt,
+  formatPercent,
+  formatReset,
+  liveCountdownSeconds,
+  progressValue,
+} from "$lib/utils/format";
 
 describe("format utilities", () => {
   it("formats unknown and known percentages", () => {
@@ -23,6 +30,45 @@ describe("format utilities", () => {
     ).toBe("2小时15分钟后");
   });
 
+  it("decrements countdowns from the snapshot capture time", () => {
+    const capturedAt = "unix:1000";
+
+    expect(liveCountdownSeconds(8100, capturedAt, 1_900_000)).toBe(7200);
+    expect(
+      formatReset(
+        {
+          remainingPercent: 72,
+          resetAt: null,
+          resetCountdownSeconds: 8100,
+        },
+        { capturedAt, nowMs: 1_900_000 },
+      ),
+    ).toBe("2小时后");
+  });
+
+  it("marks elapsed countdowns as waiting for refresh", () => {
+    expect(
+      formatReset(
+        {
+          remainingPercent: 72,
+          resetAt: null,
+          resetCountdownSeconds: 30,
+        },
+        { capturedAt: "unix:1000", nowMs: 1_031_000 },
+      ),
+    ).toBe("待刷新");
+  });
+
+  it("formats sub-minute countdowns without showing zero minutes", () => {
+    expect(
+      formatReset({
+        remainingPercent: 72,
+        resetAt: null,
+        resetCountdownSeconds: 45,
+      }),
+    ).toBe("<1分钟后");
+  });
+
   it("formats Codex English reset dates in Chinese", () => {
     expect(
       formatReset({
@@ -43,7 +89,18 @@ describe("format utilities", () => {
     ).toContain("6月23日");
   });
 
+  it("formats app-server unix reset timestamps", () => {
+    expect(
+      formatReset({
+        remainingPercent: 46,
+        resetAt: "unix:1781769600",
+        resetCountdownSeconds: null,
+      }),
+    ).not.toContain("unix:");
+  });
+
   it("formats unix capture times", () => {
     expect(formatCapturedAt("unix:1781769600")).not.toBe("尚未更新");
+    expect(capturedAtToEpochMs("unix:")).toBeNull();
   });
 });

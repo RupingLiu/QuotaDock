@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { QuotaSnapshot } from "$lib/types/usage";
+import type { AppState, QuotaSnapshot } from "$lib/types/usage";
 import {
   capturedAtToEpochMs,
   isSnapshotStale,
   shouldRefreshOnForeground,
+  UsageState,
 } from "./usageState.svelte";
 
 const snapshot: QuotaSnapshot = {
@@ -20,6 +21,9 @@ const snapshot: QuotaSnapshot = {
     resetAt: null,
     resetCountdownSeconds: null,
   },
+  planType: null,
+  creditsBalance: null,
+  resetCreditsAvailable: null,
   rawText: "",
   statusMessage: "updated",
   warnings: [],
@@ -43,6 +47,10 @@ describe("foreground refresh freshness", () => {
     expect(isSnapshotStale(snapshot, 1_060_000, 120_000)).toBe(false);
   });
 
+  it("treats implausibly future-dated snapshots as stale", () => {
+    expect(isSnapshotStale(snapshot, 600_000, 120_000)).toBe(true);
+  });
+
   it("does not refresh while already busy", () => {
     expect(shouldRefreshOnForeground(snapshot, 1_130_001, 120_000, 0, true)).toBe(
       false,
@@ -53,5 +61,33 @@ describe("foreground refresh freshness", () => {
     expect(shouldRefreshOnForeground(snapshot, 1_130_001, 120_000, 1_100_000)).toBe(
       false,
     );
+  });
+
+  it("keeps the last snapshot but exposes unsuccessful refreshes as errors", () => {
+    const state = new UsageState();
+    const appState: AppState = {
+      version: 3,
+      latestSnapshot: snapshot,
+      storageStatus: "ready",
+      storagePath: null,
+      backupPath: null,
+      statusMessage: "上次更新成功。",
+      history: [],
+      settings: {
+        automaticUpdateChecks: true,
+        lowQuotaNotifications: false,
+      },
+      recoveryNotice: null,
+    };
+
+    state.applyRefreshResult({
+      appState,
+      updated: false,
+      message: "Codex CLI 查询失败。",
+    });
+
+    expect(state.appState).toEqual(appState);
+    expect(state.errorMessage).toBe("Codex CLI 查询失败。");
+    expect(state.noticeMessage).toBeNull();
   });
 });

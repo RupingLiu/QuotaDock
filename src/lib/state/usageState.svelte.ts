@@ -1,8 +1,14 @@
 import type { QuotaDockApi } from "$lib/api/tauri";
 import { tauriApi } from "$lib/api/tauri";
-import type { AppState, QuotaSnapshot } from "$lib/types/usage";
+import type {
+  AppState,
+  QuotaSnapshot,
+  RefreshUsageResult,
+} from "$lib/types/usage";
+import { capturedAtToEpochMs } from "$lib/utils/format";
 
 export const FOREGROUND_REFRESH_MAX_AGE_MS = 2 * 60 * 1000;
+export const FUTURE_TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 export class UsageState {
   appState = $state<AppState | null>(null);
@@ -56,10 +62,15 @@ export class UsageState {
     await this.refreshUsage();
   }
 
-  applyRefreshResult(result: { appState: AppState; message: string }): void {
-    this.errorMessage = null;
+  applyRefreshResult(result: RefreshUsageResult): void {
     this.appState = result.appState;
-    this.noticeMessage = result.message;
+    if (result.updated) {
+      this.errorMessage = null;
+      this.noticeMessage = result.message;
+    } else {
+      this.errorMessage = result.message;
+      this.noticeMessage = null;
+    }
   }
 
   private async capture(work: () => Promise<void>): Promise<void> {
@@ -108,15 +119,8 @@ export function isSnapshotStale(
   if (capturedAtMs === null) {
     return true;
   }
-  return nowMs - capturedAtMs > maxAgeMs;
+  const ageMs = nowMs - capturedAtMs;
+  return ageMs > maxAgeMs || ageMs < -FUTURE_TIMESTAMP_TOLERANCE_MS;
 }
 
-export function capturedAtToEpochMs(capturedAt: string): number | null {
-  if (capturedAt.startsWith("unix:")) {
-    const seconds = Number(capturedAt.slice("unix:".length));
-    return Number.isFinite(seconds) ? seconds * 1000 : null;
-  }
-
-  const parsed = Date.parse(capturedAt);
-  return Number.isNaN(parsed) ? null : parsed;
-}
+export { capturedAtToEpochMs };

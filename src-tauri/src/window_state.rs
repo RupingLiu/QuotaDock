@@ -52,17 +52,30 @@ pub fn restore_main_window(app: &AppHandle<Wry>) {
     }
 }
 
-pub fn save_main_window_position(window: &Window<Wry>, position: PhysicalPosition<i32>) {
-    let position = snap_window_position(window, position).unwrap_or(position);
-    if let Err(error) = save_position(window.app_handle(), position) {
-        eprintln!("save main window position failed: {error}");
-    }
+pub fn snap_main_window_position(window: &Window<Wry>, position: PhysicalPosition<i32>) {
+    let _ = snap_window_position(window, position);
 }
 
 pub fn save_current_main_window_position(window: &Window<Wry>) {
     match window.outer_position() {
-        Ok(position) => save_main_window_position(window, position),
+        Ok(position) => {
+            let position = snap_window_position(window, position).unwrap_or(position);
+            if let Err(error) = save_position(window.app_handle(), position) {
+                eprintln!("save main window position failed: {error}");
+            }
+        }
         Err(error) => eprintln!("read main window position failed: {error}"),
+    }
+}
+
+pub fn save_current_main_webview_window_position(window: &WebviewWindow<Wry>) {
+    let native_window = window.as_ref().window();
+    save_current_main_window_position(&native_window);
+}
+
+pub fn save_main_window_position_for_app(app: &AppHandle<Wry>) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        save_current_main_webview_window_position(&window);
     }
 }
 
@@ -180,7 +193,10 @@ fn position_is_visible_in_work_area(
     let visible_width = right.min(area_right) - left.max(area_left);
     let visible_height = bottom.min(area_bottom) - top.max(area_top);
 
-    visible_width >= MIN_VISIBLE_WIDTH && visible_height >= MIN_VISIBLE_HEIGHT
+    let required_width = MIN_VISIBLE_WIDTH.min(i64::from(size.width));
+    let required_height = MIN_VISIBLE_HEIGHT.min(i64::from(size.height));
+
+    visible_width >= required_width && visible_height >= required_height
 }
 
 fn snap_window_position(
@@ -346,9 +362,37 @@ mod tests {
             height: 1040,
         };
         let size = PhysicalSize::new(306, 92);
-        let position = PhysicalPosition::new(1880, 100);
+        let position = PhysicalPosition::new(1856, 100);
 
         assert!(position_is_visible_in_work_area(position, size, work_area));
+    }
+
+    #[test]
+    fn compact_status_bar_position_is_restored_when_fully_visible_vertically() {
+        let work_area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let size = PhysicalSize::new(360, 36);
+        let position = PhysicalPosition::new(1548, 992);
+
+        assert!(position_is_visible_in_work_area(position, size, work_area));
+    }
+
+    #[test]
+    fn compact_status_bar_still_requires_a_useful_visible_width() {
+        let work_area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let size = PhysicalSize::new(360, 36);
+        let position = PhysicalPosition::new(1880, 992);
+
+        assert!(!position_is_visible_in_work_area(position, size, work_area));
     }
 
     #[test]
