@@ -1,4 +1,4 @@
-export type SnapshotSource = "pasted-status" | "codex-cli";
+export type SnapshotSource = "pasted-status" | "codex-cli" | "codex-app-server";
 
 export type StorageStatus = "ready" | "missing" | "recovered" | "unsupported-version";
 
@@ -19,6 +19,9 @@ export type QuotaSnapshot = {
   capturedAt: string;
   fiveHour: QuotaReading;
   weekly: QuotaReading;
+  planType: string | null;
+  creditsBalance: string | null;
+  resetCreditsAvailable: number | null;
   rawText: string;
   statusMessage: string;
   warnings: ParseWarning[];
@@ -28,6 +31,23 @@ export type ParseResult = {
   snapshot: QuotaSnapshot;
 };
 
+export type UsageHistoryPoint = {
+  capturedAt: string;
+  fiveHourRemainingPercent: number | null;
+  weeklyRemainingPercent: number | null;
+};
+
+export type AppSettings = {
+  automaticUpdateChecks: boolean;
+  lowQuotaNotifications: boolean;
+};
+
+export type RecoveryNotice = {
+  status: StorageStatus;
+  message: string;
+  backupPath: string;
+};
+
 export type AppState = {
   version: number;
   latestSnapshot: QuotaSnapshot | null;
@@ -35,10 +55,30 @@ export type AppState = {
   storagePath: string | null;
   backupPath: string | null;
   statusMessage: string;
+  history: UsageHistoryPoint[];
+  settings: AppSettings;
+  recoveryNotice: RecoveryNotice | null;
 };
 
 export type RefreshUsageResult = {
   appState: AppState;
   updated: boolean;
   message: string;
+};
+
+export type SettingsPatch = {
+  automaticUpdateChecks?: boolean;
+  lowQuotaNotifications?: boolean;
+};
+
+export type AppDiagnostics = {
+  appVersion: string;
+  codexPath: string | null;
+  codexVersion: string | null;
+  latestSource: SnapshotSource | null;
+  latestSuccessAt: string | null;
+  storagePath: string | null;
+  storageStatus: StorageStatus;
+  startupEnabled: boolean;
+  signedUpdatesEnabled: boolean;
 };

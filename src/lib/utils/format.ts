@@ -1,5 +1,10 @@
 import type { QuotaReading, SnapshotSource, StorageStatus } from "$lib/types/usage";
 
+export type ResetFormatOptions = {
+  capturedAt?: string | null;
+  nowMs?: number;
+};
+
 export function formatPercent(value: number | null): string {
   return typeof value === "number" ? `${value}%` : "--";
 }
@@ -11,14 +16,40 @@ export function progressValue(value: number | null): number {
   return Math.max(0, Math.min(100, value));
 }
 
-export function formatReset(reading: QuotaReading): string {
+export function formatReset(
+  reading: QuotaReading,
+  options: ResetFormatOptions = {},
+): string {
   if (reading.resetAt) {
     return formatDateTimeOrRaw(reading.resetAt);
   }
   if (typeof reading.resetCountdownSeconds === "number") {
-    return `${formatDuration(reading.resetCountdownSeconds)}后`;
+    const remainingSeconds = liveCountdownSeconds(
+      reading.resetCountdownSeconds,
+      options.capturedAt,
+      options.nowMs,
+    );
+    if (remainingSeconds === 0) {
+      return "待刷新";
+    }
+    return `${formatDuration(remainingSeconds)}后`;
   }
   return "--";
+}
+
+export function liveCountdownSeconds(
+  capturedCountdownSeconds: number,
+  capturedAt?: string | null,
+  nowMs = Date.now(),
+): number {
+  const safeCountdown = Math.max(0, Math.floor(capturedCountdownSeconds));
+  const capturedAtMs = capturedAtToEpochMs(capturedAt);
+  if (capturedAtMs === null || nowMs <= capturedAtMs) {
+    return safeCountdown;
+  }
+
+  const elapsedSeconds = Math.floor((nowMs - capturedAtMs) / 1000);
+  return Math.max(0, safeCountdown - elapsedSeconds);
 }
 
 export function formatCapturedAt(value: string | null | undefined): string {
@@ -34,7 +65,29 @@ export function formatCapturedAt(value: string | null | undefined): string {
   return formatDateTimeOrRaw(value);
 }
 
+export function capturedAtToEpochMs(
+  capturedAt: string | null | undefined,
+): number | null {
+  if (!capturedAt) {
+    return null;
+  }
+  if (capturedAt.startsWith("unix:")) {
+    const rawSeconds = capturedAt.slice("unix:".length).trim();
+    if (!/^\d+(?:\.\d+)?$/.test(rawSeconds)) {
+      return null;
+    }
+    const seconds = Number(rawSeconds);
+    return Number.isFinite(seconds) ? seconds * 1000 : null;
+  }
+
+  const parsed = Date.parse(capturedAt);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
 export function sourceLabel(source: SnapshotSource | null | undefined): string {
+  if (source === "codex-app-server") {
+    return "Codex App Server";
+  }
   if (source === "codex-cli") {
     return "Codex CLI";
   }
@@ -60,6 +113,10 @@ export function storageLabel(status: StorageStatus | null | undefined): string {
 }
 
 function formatDateTimeOrRaw(value: string): string {
+  if (value.startsWith("unix:")) {
+    const epochMs = capturedAtToEpochMs(value);
+    return epochMs === null ? value : formatDate(new Date(epochMs));
+  }
   const codexReset = formatCodexResetDate(value);
   if (codexReset) {
     return codexReset;
@@ -132,6 +189,9 @@ function formatDuration(seconds: number): string {
   }
   if (hours > 0) {
     return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`;
+  }
+  if (safeSeconds > 0 && minutes === 0) {
+    return "<1分钟";
   }
   return `${minutes}分钟`;
 }

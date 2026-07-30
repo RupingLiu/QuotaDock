@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(dead_code))]
 
+mod app_server;
 mod models;
 mod startup;
 mod status_parser;
@@ -11,13 +12,21 @@ mod version;
 #[cfg(feature = "desktop")]
 mod window_state;
 
-#[cfg(not(test))]
 mod commands;
+#[cfg(feature = "desktop")]
+mod details;
 
 #[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
+    #[cfg(feature = "desktop")]
+    let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
     #[cfg(feature = "desktop")]
     let builder = builder.setup(|app| {
         commands::install_refresh_coordinator(app);
@@ -35,10 +44,10 @@ pub fn run() {
     builder
         .on_window_event(|window, event| {
             #[cfg(feature = "desktop")]
-            if window.label() == "main" {
-                match event {
+            match window.label() {
+                "main" => match event {
                     tauri::WindowEvent::Moved(position) => {
-                        window_state::save_main_window_position(window, *position);
+                        window_state::snap_main_window_position(window, *position);
                     }
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         window_state::save_current_main_window_position(window);
@@ -46,7 +55,14 @@ pub fn run() {
                         let _ = window.hide();
                     }
                     _ => {}
+                },
+                "details" => {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
                 }
+                _ => {}
             }
             #[cfg(not(feature = "desktop"))]
             let _ = (window, event);
@@ -54,7 +70,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
             commands::refresh_usage,
-            commands::show_dashboard_context_menu
+            commands::show_dashboard_context_menu,
+            commands::update_settings,
+            commands::acknowledge_recovery,
+            commands::get_diagnostics,
+            commands::set_startup_enabled,
+            commands::show_details,
+            commands::hide_details,
+            commands::open_official_usage
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

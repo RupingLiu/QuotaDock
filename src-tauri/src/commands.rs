@@ -1,6 +1,10 @@
-use crate::models::{AppState, QuotaSnapshot, RefreshUsageResult, SnapshotSource};
+use crate::app_server;
+use crate::models::{
+    AppDiagnostics, AppState, QuotaSnapshot, RefreshUsageResult, SettingsPatch, SnapshotSource,
+};
 use crate::status_parser::{parse_status_text_with_source, ParseClock};
 use crate::usage_store::{StoreError, UsageStore};
+use crate::{startup, version};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -8,8 +12,12 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "desktop")]
+use tauri::plugin::PermissionState;
 use tauri::{App, AppHandle, Emitter, Manager};
+#[cfg(feature = "desktop")]
+use tauri_plugin_notification::NotificationExt;
 
 pub const USAGE_STATE_CHANGED_EVENT: &str = "usage-state-changed";
 const AUTO_FIRST_REFRESH_DELAY: Duration = Duration::from_secs(10);
@@ -19,6 +27,7 @@ const AUTO_POST_RESET_REFRESH_DELAY: Duration = Duration::from_secs(30);
 const AUTO_RESET_WATCH_WINDOW: Duration = Duration::from_secs(10 * 60);
 const AUTO_MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(30 * 60);
 const LOW_USAGE_THRESHOLD_PERCENT: u8 = 20;
+const STATUS_OUTPUT_SETTLE_DELAY: Duration = Duration::from_millis(900);
 
 #[derive(Clone, Default)]
 pub struct RefreshCoordinator {
@@ -135,12 +144,38 @@ fn is_low_usage_snapshot(snapshot: &QuotaSnapshot) -> bool {
 }
 
 fn imminent_reset_refresh_interval(snapshot: &QuotaSnapshot) -> Option<Duration> {
+    let now_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    imminent_reset_refresh_interval_at(snapshot, now_unix_seconds)
+}
+
+fn imminent_reset_refresh_interval_at(
+    snapshot: &QuotaSnapshot,
+    now_unix_seconds: i64,
+) -> Option<Duration> {
     [&snapshot.five_hour, &snapshot.weekly]
         .iter()
-        .filter_map(|reading| reading.reset_countdown_seconds)
-        .filter(|seconds| *seconds <= AUTO_RESET_WATCH_WINDOW.as_secs() as i64)
+        .flat_map(|reading| {
+            let countdown = reading.reset_countdown_seconds;
+            let absolute = reading
+                .reset_at
+                .as_deref()
+                .and_then(unix_reset_seconds)
+                .map(|reset| reset - now_unix_seconds);
+            [countdown, absolute].into_iter().flatten()
+        })
+        .filter(|seconds| {
+            let watch = AUTO_RESET_WATCH_WINDOW.as_secs() as i64;
+            *seconds >= -watch && *seconds <= watch
+        })
         .map(|seconds| Duration::from_secs(seconds.max(0) as u64) + AUTO_POST_RESET_REFRESH_DELAY)
         .min()
+}
+
+fn unix_reset_seconds(value: &str) -> Option<i64> {
+    value.strip_prefix("unix:")?.trim().parse().ok()
 }
 
 fn failure_backoff_interval(consecutive_failures: u32) -> Duration {
@@ -175,6 +210,139 @@ pub fn show_dashboard_context_menu(app: AppHandle, x: f64, y: f64) -> Result<(),
     {
         let _ = (app, x, y);
         Err("当前构建不支持桌面菜单。".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<AppState, String> {
+    #[cfg(feature = "desktop")]
+    if patch.low_quota_notifications == Some(true) {
+        let notifications = app.notification();
+        if matches!(
+            notifications
+                .permission_state()
+                .map_err(|error| format!("读取通知权限失败：{error}"))?,
+            PermissionState::Prompt | PermissionState::PromptWithRationale
+        ) {
+            notifications
+                .request_permission()
+                .map_err(|error| format!("请求通知权限失败：{error}"))?;
+        }
+        if notifications
+            .permission_state()
+            .map_err(|error| format!("读取通知权限失败：{error}"))?
+            != PermissionState::Granted
+        {
+            return Err("系统未授予通知权限，低额度通知没有开启。".to_string());
+        }
+    }
+
+    let app_state = store_for_app(&app)?
+        .update_settings(patch)
+        .map(|outcome| outcome.into_app_state())
+        .map_err(to_command_error)?;
+    sync_tray(&app, &app_state);
+    emit_usage_state(
+        &app,
+        &RefreshUsageResult {
+            app_state: app_state.clone(),
+            updated: true,
+            message: "设置已保存。".to_string(),
+        },
+    );
+    Ok(app_state)
+}
+
+#[tauri::command]
+pub fn acknowledge_recovery(app: AppHandle) -> Result<AppState, String> {
+    let app_state = store_for_app(&app)?
+        .acknowledge_recovery()
+        .map(|outcome| outcome.into_app_state())
+        .map_err(to_command_error)?;
+    emit_usage_state(
+        &app,
+        &RefreshUsageResult {
+            app_state: app_state.clone(),
+            updated: true,
+            message: "存储恢复提示已确认。".to_string(),
+        },
+    );
+    Ok(app_state)
+}
+
+#[tauri::command]
+pub fn get_diagnostics(app: AppHandle) -> Result<AppDiagnostics, String> {
+    let state = load_app_state(&app)?;
+    let codex_path = find_codex_binary();
+    let codex_version = codex_path.as_ref().and_then(|_| {
+        run_codex(&["--version"], Duration::from_secs(3))
+            .ok()
+            .filter(|output| output.success)
+            .map(|output| output.stdout.trim().to_string())
+            .filter(|output| !output.is_empty())
+    });
+    Ok(AppDiagnostics {
+        app_version: version::APP_VERSION.to_string(),
+        codex_path: codex_path.map(|path| path.display().to_string()),
+        codex_version,
+        latest_source: state
+            .latest_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.source.clone()),
+        latest_success_at: state
+            .latest_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.captured_at.clone()),
+        storage_path: state.storage_path.clone(),
+        storage_status: state.storage_status,
+        startup_enabled: startup::is_enabled().unwrap_or(false),
+        signed_updates_enabled: true,
+    })
+}
+
+#[tauri::command]
+pub fn set_startup_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let enabled = startup::set_enabled(enabled)?;
+    #[cfg(feature = "desktop")]
+    crate::tray::refresh_menu(&app);
+    Ok(enabled)
+}
+
+#[tauri::command]
+pub fn show_details(app: AppHandle) -> Result<(), String> {
+    #[cfg(feature = "desktop")]
+    {
+        crate::details::show(&app)
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = app;
+        Err("当前构建不支持详情窗口。".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn hide_details(app: AppHandle) -> Result<(), String> {
+    #[cfg(feature = "desktop")]
+    {
+        crate::details::hide(&app)
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = app;
+        Err("当前构建不支持详情窗口。".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn open_official_usage() -> Result<(), String> {
+    #[cfg(feature = "desktop")]
+    {
+        crate::details::open_official_usage()
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        Err("当前构建不支持打开外部页面。".to_string())
     }
 }
 
@@ -216,16 +384,25 @@ fn begin_refresh(app: &AppHandle, origin: RefreshOrigin) -> Result<RefreshPermit
 
 fn refresh_usage_blocking(app: AppHandle) -> Result<RefreshUsageResult, String> {
     let store = store_for_app(&app)?;
+    let previous = store.load().map_err(to_command_error)?;
+    let previous_snapshot = previous.state.latest_snapshot.clone();
+    let notifications_enabled = previous.state.settings.low_quota_notifications;
     match fetch_usage_from_codex_cli() {
         Ok(snapshot) => {
+            let notification = notifications_enabled
+                .then(|| low_quota_notification(previous_snapshot.as_ref(), &snapshot))
+                .flatten();
             let app_state = store
                 .save_snapshot(snapshot)
                 .map(|outcome| outcome.into_app_state())
                 .map_err(to_command_error)?;
+            if let Some(message) = notification {
+                notify_low_quota(&app, &message);
+            }
             Ok(RefreshUsageResult {
                 app_state,
                 updated: true,
-                message: "已通过 Codex CLI 更新额度。".to_string(),
+                message: "Codex 额度已更新。".to_string(),
             })
         }
         Err(message) => {
@@ -255,46 +432,36 @@ pub fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
-    let output = run_codex_status_pty(Duration::from_secs(45)).or_else(|pty_error| {
-        fetch_usage_from_structured_cli().map_err(|structured_error| {
-            if structured_error.contains("未找到 Codex CLI") {
-                structured_error
-            } else {
-                pty_error
+    let app_server_error = match codex_command(&["app-server"]) {
+        Ok(mut command) => {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
             }
-        })
+            match app_server::fetch_rate_limits(
+                command,
+                Duration::from_secs(12),
+                version::APP_VERSION,
+            ) {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(error) => error,
+            }
+        }
+        Err(error) => error,
+    };
+    let output = run_codex_status_pty(Duration::from_secs(45)).map_err(|pty_error| {
+        format!("结构化查询失败：{app_server_error}；兼容查询也失败：{pty_error}")
     })?;
 
     let mut result =
         parse_status_text_with_source(&output, ParseClock::now(), SnapshotSource::CodexCli);
-    result.snapshot.status_message = "已通过 Codex CLI 更新额度。".to_string();
+    result.snapshot.status_message = "已通过 Codex CLI /status 兼容模式更新额度。".to_string();
     result.snapshot.raw_text.clear();
     if result.snapshot.has_any_usage() {
         Ok(result.snapshot)
     } else {
         Err("Codex CLI 没有返回可识别的额度，请稍后重试。".to_string())
-    }
-}
-
-fn fetch_usage_from_structured_cli() -> Result<String, String> {
-    let help = run_codex(&["--help"], Duration::from_secs(3))?;
-    if !help.success {
-        return Err("Codex CLI 无法执行，请确认 codex 已安装并可登录。".to_string());
-    }
-
-    let args = if command_list_contains(&help.stdout, "usage") {
-        ["usage", "--json"]
-    } else if command_list_contains(&help.stdout, "status") {
-        ["status", "--json"]
-    } else {
-        return Err("Codex CLI 未提供结构化额度查询。".to_string());
-    };
-
-    let output = run_codex(&args, Duration::from_secs(8))?;
-    if output.success {
-        Ok(output.stdout)
-    } else {
-        Err("Codex CLI 额度查询失败，请稍后重试。".to_string())
     }
 }
 
@@ -336,6 +503,7 @@ mod windows_conpty {
     use super::{
         codex_status_output_ready, codex_update_prompt_visible, is_cmd_shim,
         should_send_status_command, status_command_waiting_for_enter,
+        status_output_ready_after_settle,
     };
     use std::ffi::{c_void, OsStr};
     use std::io::{Read, Write};
@@ -462,10 +630,15 @@ mod windows_conpty {
         let mut output = Vec::new();
         let mut sent_count = 0_u8;
         let mut last_sent = started;
+        let mut last_output_change = started;
         let mut cursor_reported = false;
 
         loop {
+            let output_length_before_drain = output.len();
             drain_receiver(&receiver, &mut output);
+            if output.len() != output_length_before_drain {
+                last_output_change = Instant::now();
+            }
             let text = String::from_utf8_lossy(&output).to_string();
             respond_to_cursor_query(&mut writer, &text, &mut cursor_reported)?;
 
@@ -488,9 +661,13 @@ mod windows_conpty {
                 }
                 sent_count += 1;
                 last_sent = Instant::now();
+                last_output_change = last_sent;
+                continue;
             }
 
-            if sent_count > 0 && codex_status_output_ready(&text) {
+            if sent_count > 0
+                && status_output_ready_after_settle(&text, last_output_change.elapsed())
+            {
                 let _ = child.kill();
                 write_probe_log(&format!(
                     "exit_code={:?}\nbytes={}\n{text}",
@@ -705,18 +882,27 @@ mod windows_conpty {
             let mut output = Vec::new();
             let mut sent_count = 0_u8;
             let mut last_sent = started;
+            let mut last_output_change = started;
 
             loop {
+                let output_length_before_drain = output.len();
                 reader.drain(&mut output);
+                if output.len() != output_length_before_drain {
+                    last_output_change = Instant::now();
+                }
                 let text = String::from_utf8_lossy(&output).to_string();
 
                 if should_send_status_command(&text, started, last_sent, sent_count, false) {
                     write_all(input_write.raw(), b"/status\r")?;
                     sent_count += 1;
                     last_sent = Instant::now();
+                    last_output_change = last_sent;
+                    continue;
                 }
 
-                if sent_count > 0 && codex_status_output_ready(&text) {
+                if sent_count > 0
+                    && status_output_ready_after_settle(&text, last_output_change.elapsed())
+                {
                     process.terminate();
                     write_probe_log(&format!(
                         "exit_code={:?}\nbytes={}\n{text}",
@@ -1137,14 +1323,57 @@ fn codex_status_output_ready(output: &str) -> bool {
     parsed.snapshot.has_any_usage()
 }
 
-fn command_list_contains(help: &str, command: &str) -> bool {
-    help.lines().any(|line| {
-        let trimmed = line.trim_start().to_ascii_lowercase();
-        let Some(rest) = trimmed.strip_prefix(command) else {
-            return false;
-        };
-        rest.starts_with(char::is_whitespace)
-    })
+fn status_output_ready_after_settle(output: &str, quiet_for: Duration) -> bool {
+    quiet_for >= STATUS_OUTPUT_SETTLE_DELAY && codex_status_output_ready(output)
+}
+
+fn low_quota_notification(
+    previous: Option<&QuotaSnapshot>,
+    current: &QuotaSnapshot,
+) -> Option<String> {
+    let previous = previous?;
+    let mut windows = Vec::new();
+    for (label, old, new) in [
+        (
+            "5 小时",
+            previous.five_hour.remaining_percent,
+            current.five_hour.remaining_percent,
+        ),
+        (
+            "1 周",
+            previous.weekly.remaining_percent,
+            current.weekly.remaining_percent,
+        ),
+    ] {
+        if old.is_some_and(|percent| percent > LOW_USAGE_THRESHOLD_PERCENT)
+            && new.is_some_and(|percent| percent <= LOW_USAGE_THRESHOLD_PERCENT)
+        {
+            windows.push(format!("{label}剩余 {}%", new.unwrap_or_default()));
+        }
+    }
+    (!windows.is_empty()).then(|| windows.join("，"))
+}
+
+fn notify_low_quota(app: &AppHandle, message: &str) {
+    #[cfg(feature = "desktop")]
+    {
+        if matches!(
+            app.notification().permission_state(),
+            Ok(PermissionState::Granted)
+        ) {
+            if let Err(error) = app
+                .notification()
+                .builder()
+                .title("QuotaDock 低额度提醒")
+                .body(message)
+                .show()
+            {
+                eprintln!("show low quota notification failed: {error}");
+            }
+        }
+    }
+    #[cfg(not(feature = "desktop"))]
+    let _ = (app, message);
 }
 
 #[derive(Debug)]
@@ -1314,13 +1543,13 @@ fn to_command_error(error: StoreError) -> String {
 #[cfg(test)]
 mod tests {
     use crate::commands::{
-        adaptive_refresh_interval, command_list_contains, failure_backoff_interval,
-        next_auto_refresh_schedule, AUTO_BASE_REFRESH_INTERVAL, AUTO_LOW_USAGE_REFRESH_INTERVAL,
-        AUTO_POST_RESET_REFRESH_DELAY, AUTO_RESET_WATCH_WINDOW,
+        adaptive_refresh_interval, failure_backoff_interval, next_auto_refresh_schedule,
+        AUTO_BASE_REFRESH_INTERVAL, AUTO_LOW_USAGE_REFRESH_INTERVAL, AUTO_POST_RESET_REFRESH_DELAY,
+        AUTO_RESET_WATCH_WINDOW, STATUS_OUTPUT_SETTLE_DELAY,
     };
     use crate::models::{
-        AppState, QuotaReading, QuotaSnapshot, RefreshUsageResult, SnapshotSource, StorageStatus,
-        STATE_VERSION,
+        AppSettings, AppState, QuotaReading, QuotaSnapshot, RefreshUsageResult, SnapshotSource,
+        StorageStatus, STATE_VERSION,
     };
     use std::time::Duration;
 
@@ -1332,6 +1561,9 @@ mod tests {
             storage_path: None,
             backup_path: None,
             status_message: "已通过 Codex CLI 更新额度。".to_string(),
+            history: Vec::new(),
+            settings: AppSettings::default(),
+            recovery_notice: None,
         }
     }
 
@@ -1362,25 +1594,13 @@ mod tests {
                 reset_at: None,
                 reset_countdown_seconds: None,
             },
+            plan_type: None,
+            credits_balance: None,
+            reset_credits_available: None,
             raw_text: String::new(),
             status_message: "已通过 Codex CLI 更新额度。".to_string(),
             warnings: Vec::new(),
         }
-    }
-
-    #[test]
-    fn detects_usage_command_as_top_level_command_only() {
-        let help = "Commands:\n  usage   Show quota\n  login   Manage login";
-
-        assert!(command_list_contains(help, "usage"));
-        assert!(!command_list_contains(help, "status"));
-    }
-
-    #[test]
-    fn does_not_treat_login_status_as_status_command() {
-        let help = "Commands:\n  login   Manage login status\n  doctor  Diagnose";
-
-        assert!(!command_list_contains(help, "status"));
     }
 
     #[test]
@@ -1402,6 +1622,20 @@ mod tests {
         let output = "Weekly limit: [===================░] 93% left\n                              (resets 13:21 on 22 Jul)\nGPT-5.3-Codex-Spark Weekly limit: [====================] 100% left";
 
         assert!(super::codex_status_output_ready(output));
+    }
+
+    #[test]
+    fn waits_for_status_output_to_settle_before_accepting_it() {
+        let partial = "5h limit: [======] 44% left (resets 22:04)";
+
+        assert!(!super::status_output_ready_after_settle(
+            partial,
+            STATUS_OUTPUT_SETTLE_DELAY - Duration::from_millis(1),
+        ));
+        assert!(super::status_output_ready_after_settle(
+            partial,
+            STATUS_OUTPUT_SETTLE_DELAY,
+        ));
     }
 
     #[test]
@@ -1474,6 +1708,28 @@ mod tests {
     }
 
     #[test]
+    fn auto_refresh_uses_structured_absolute_reset_time() {
+        let mut value = snapshot(75, 64, None);
+        value.five_hour.reset_at = Some("unix:1042".to_string());
+
+        assert_eq!(
+            super::imminent_reset_refresh_interval_at(&value, 1000),
+            Some(Duration::from_secs(42) + AUTO_POST_RESET_REFRESH_DELAY)
+        );
+    }
+
+    #[test]
+    fn auto_refresh_ignores_long_expired_absolute_reset_time() {
+        let mut value = snapshot(75, 64, None);
+        value.five_hour.reset_at = Some("unix:1000".to_string());
+
+        assert_eq!(
+            super::imminent_reset_refresh_interval_at(&value, 2000),
+            None
+        );
+    }
+
+    #[test]
     fn auto_refresh_uses_failure_backoff_for_unsuccessful_results() {
         let state = AppState {
             version: STATE_VERSION,
@@ -1482,6 +1738,9 @@ mod tests {
             storage_path: None,
             backup_path: None,
             status_message: "Codex CLI 额度查询失败，请稍后重试。".to_string(),
+            history: Vec::new(),
+            settings: AppSettings::default(),
+            recovery_notice: None,
         };
         let outcome = Ok(RefreshUsageResult {
             app_state: state,
@@ -1510,5 +1769,20 @@ mod tests {
         let output = super::run_codex_status_pty(std::time::Duration::from_secs(20)).unwrap();
 
         assert!(super::codex_status_output_ready(&output));
+    }
+
+    #[test]
+    #[ignore]
+    fn queries_real_codex_app_server_rate_limits() {
+        let command = super::codex_command(&["app-server"]).unwrap();
+        let snapshot = crate::app_server::fetch_rate_limits(
+            command,
+            std::time::Duration::from_secs(15),
+            crate::version::APP_VERSION,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.source, SnapshotSource::CodexAppServer);
+        assert!(snapshot.has_any_usage());
     }
 }

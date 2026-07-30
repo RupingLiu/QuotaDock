@@ -54,6 +54,9 @@ pub fn parse_status_text_with_source(
         if trimmed.is_empty() || is_generic_status_header(trimmed) {
             continue;
         }
+        if is_secondary_model_quota_section(trimmed) {
+            break;
+        }
 
         let labels = detect_windows(trimmed);
         if labels.len() == 1 {
@@ -98,16 +101,16 @@ pub fn parse_status_text_with_source(
     }
 
     let mut warnings = Vec::new();
-    if !five_hour.has_value() {
+    if !five_hour.has_usage() {
         warnings.push(warning("missing-five-hour", "未识别到 5 小时额度。"));
     }
-    if !weekly.has_value() {
+    if !weekly.has_usage() {
         warnings.push(warning("missing-weekly", "未识别到 1 周额度。"));
     }
-    if !unknown_lines.is_empty() && (five_hour.has_value() || weekly.has_value()) {
+    if !unknown_lines.is_empty() && (five_hour.has_usage() || weekly.has_usage()) {
         warnings.push(warning("unknown-lines", "部分粘贴内容未被识别，已忽略。"));
     }
-    if !five_hour.has_value() && !weekly.has_value() {
+    if !five_hour.has_usage() && !weekly.has_usage() {
         warnings.push(warning("no-quota-fields", "没有找到可用的额度信息。"));
     }
 
@@ -129,6 +132,9 @@ pub fn parse_status_text_with_source(
             captured_at: clock.captured_at,
             five_hour,
             weekly,
+            plan_type: None,
+            credits_balance: None,
+            reset_credits_available: None,
             raw_text: raw_text.to_string(),
             status_message,
             warnings,
@@ -303,9 +309,9 @@ fn extract_reset_at(line: &str) -> Option<String> {
         }
     }
 
-    value_after_colon(line)
-        .filter(|value| !value.contains('%') && !looks_like_countdown(value))
-        .or_else(|| reset_phrase(line))
+    reset_phrase(line).or_else(|| {
+        value_after_colon(line).filter(|value| !value.contains('%') && !looks_like_countdown(value))
+    })
 }
 
 fn reset_phrase(line: &str) -> Option<String> {
@@ -511,6 +517,11 @@ fn is_generic_status_header(line: &str) -> bool {
     lower == "codex status" || lower == "/status" || lower == "status"
 }
 
+fn is_secondary_model_quota_section(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("codex-spark") && lower.contains("limit")
+}
+
 fn warning(code: &str, message: &str) -> ParseWarning {
     ParseWarning {
         code: code.to_string(),
@@ -593,6 +604,16 @@ mod tests {
             result.snapshot.weekly.reset_at.as_deref(),
             Some("07:00 on 25 Jun")
         );
+    }
+
+    #[test]
+    fn does_not_fill_missing_current_fields_from_spark_limits() {
+        let result = parse(
+            "Weekly limit: [======] 59% left\nGPT-5.3-Codex-Spark limit:\nWeekly limit: [======] 100% left (resets 21:51 on 25 Jun)",
+        );
+
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(59));
+        assert!(result.snapshot.weekly.reset_at.is_none());
     }
 
     #[test]

@@ -1,10 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, RefreshUsageResult } from "$lib/types/usage";
+import type {
+  AppDiagnostics,
+  AppState,
+  RefreshUsageResult,
+  SettingsPatch,
+} from "$lib/types/usage";
 
 export type QuotaDockApi = {
   getAppState(): Promise<AppState>;
   refreshUsage(): Promise<RefreshUsageResult>;
   showDashboardContextMenu(x: number, y: number): Promise<void>;
+  updateSettings(patch: SettingsPatch): Promise<AppState>;
+  acknowledgeRecovery(): Promise<AppState>;
+  getDiagnostics(): Promise<AppDiagnostics>;
+  setStartupEnabled(enabled: boolean): Promise<boolean>;
+  hideDetails(): Promise<void>;
+  openOfficialUsage(): Promise<void>;
 };
 
 export const tauriApi: QuotaDockApi = {
@@ -24,6 +35,42 @@ export const tauriApi: QuotaDockApi = {
     hasTauriRuntime()
       ? invoke<void>("show_dashboard_context_menu", { x, y })
       : Promise.resolve(),
+  updateSettings: (patch) =>
+    hasTauriRuntime()
+      ? invoke<AppState>("update_settings", { patch })
+      : Promise.resolve({
+          ...defaultAppState("浏览器预览模式：设置不会写入系统。"),
+          settings: {
+            ...defaultAppState("").settings,
+            ...patch,
+          },
+        }),
+  acknowledgeRecovery: () =>
+    hasTauriRuntime()
+      ? invoke<AppState>("acknowledge_recovery")
+      : Promise.resolve(defaultAppState("浏览器预览模式。")),
+  getDiagnostics: () =>
+    hasTauriRuntime()
+      ? invoke<AppDiagnostics>("get_diagnostics")
+      : Promise.resolve({
+          appVersion: "preview",
+          codexPath: null,
+          codexVersion: null,
+          latestSource: null,
+          latestSuccessAt: null,
+          storagePath: null,
+          storageStatus: "missing",
+          startupEnabled: false,
+          signedUpdatesEnabled: true,
+        }),
+  setStartupEnabled: (enabled) =>
+    hasTauriRuntime()
+      ? invoke<boolean>("set_startup_enabled", { enabled })
+      : Promise.resolve(enabled),
+  hideDetails: () =>
+    hasTauriRuntime() ? invoke<void>("hide_details") : Promise.resolve(),
+  openOfficialUsage: () =>
+    hasTauriRuntime() ? invoke<void>("open_official_usage") : Promise.resolve(),
 };
 
 function hasTauriRuntime(): boolean {
@@ -32,11 +79,17 @@ function hasTauriRuntime(): boolean {
 
 function defaultAppState(statusMessage: string): AppState {
   return {
-    version: 2,
+    version: 3,
     latestSnapshot: null,
     storageStatus: "missing",
     storagePath: null,
     backupPath: null,
     statusMessage,
+    history: [],
+    settings: {
+      automaticUpdateChecks: true,
+      lowQuotaNotifications: false,
+    },
+    recoveryNotice: null,
   };
 }
