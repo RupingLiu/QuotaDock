@@ -201,12 +201,6 @@ fn parse_rate_limits_value(result: Value, captured_at: String) -> Result<QuotaSn
     }
 
     let mut warnings = Vec::new();
-    if !five_hour.has_usage() {
-        warnings.push(warning(
-            "missing-five-hour",
-            "当前账户没有返回短周期额度窗口。",
-        ));
-    }
     if !weekly.has_usage() {
         warnings.push(warning(
             "missing-weekly",
@@ -216,8 +210,10 @@ fn parse_rate_limits_value(result: Value, captured_at: String) -> Result<QuotaSn
     if !five_hour.has_usage() && !weekly.has_usage() {
         return Err("Codex app-server 没有返回可用的额度百分比。".to_string());
     }
-    let status_message = if warnings.is_empty() {
+    let status_message = if five_hour.has_usage() && warnings.is_empty() {
         "已通过 Codex app-server 更新全部额度。".to_string()
+    } else if weekly.has_usage() && warnings.is_empty() {
+        "已通过 Codex app-server 更新 1 周额度；当前接口未提供 5 小时额度。".to_string()
     } else {
         "已通过 Codex app-server 更新当前账户提供的额度窗口。".to_string()
     };
@@ -376,10 +372,11 @@ mod tests {
 
         assert_eq!(snapshot.five_hour.remaining_percent, None);
         assert_eq!(snapshot.weekly.remaining_percent, Some(32));
-        assert!(snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-five-hour"));
+        assert!(snapshot.warnings.is_empty());
+        assert_eq!(
+            snapshot.status_message,
+            "已通过 Codex app-server 更新 1 周额度；当前接口未提供 5 小时额度。"
+        );
     }
 
     #[test]

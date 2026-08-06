@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppDiagnostics,
   AppState,
+  QuotaSnapshot,
   RefreshUsageResult,
   SettingsPatch,
 } from "$lib/types/usage";
@@ -78,18 +79,57 @@ function hasTauriRuntime(): boolean {
 }
 
 function defaultAppState(statusMessage: string): AppState {
+  const previewSnapshot = browserPreviewSnapshot();
   return {
     version: 3,
-    latestSnapshot: null,
+    latestSnapshot: previewSnapshot,
     storageStatus: "missing",
     storagePath: null,
     backupPath: null,
-    statusMessage,
+    statusMessage: previewSnapshot?.statusMessage ?? statusMessage,
     history: [],
     settings: {
       automaticUpdateChecks: true,
       lowQuotaNotifications: false,
     },
     recoveryNotice: null,
+  };
+}
+
+function browserPreviewSnapshot(): QuotaSnapshot | null {
+  if (
+    !import.meta.env.DEV ||
+    typeof window === "undefined" ||
+    new URLSearchParams(window.location.search).get("fixture") !== "weekly-only"
+  ) {
+    return null;
+  }
+
+  const capturedAt = `unix:${Math.floor(Date.now() / 1000)}`;
+  return {
+    id: capturedAt,
+    source: "codex-app-server",
+    capturedAt,
+    fiveHour: {
+      remainingPercent: null,
+      resetAt: null,
+      resetCountdownSeconds: null,
+    },
+    weekly: {
+      remainingPercent: 76,
+      resetAt: null,
+      resetCountdownSeconds: null,
+    },
+    planType: "preview",
+    creditsBalance: null,
+    resetCreditsAvailable: null,
+    rawText: "",
+    statusMessage: "已通过 Codex app-server 更新 1 周额度；当前接口未提供 5 小时额度。",
+    warnings: [
+      {
+        code: "missing-five-hour",
+        message: "当前账户没有返回短周期额度窗口。",
+      },
+    ],
   };
 }

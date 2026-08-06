@@ -218,6 +218,35 @@ describe("QuotaDashboard", () => {
     expect(screen.getByText(/数据不完整或存储已恢复/)).toBeTruthy();
   });
 
+  it("treats an unavailable optional five-hour window as a fresh weekly reading", () => {
+    const weeklyOnlyState: AppState = {
+      ...appState,
+      latestSnapshot: {
+        ...snapshot,
+        fiveHour: {
+          remainingPercent: null,
+          resetAt: null,
+          resetCountdownSeconds: null,
+        },
+        warnings: [
+          {
+            code: "missing-five-hour",
+            message: "当前账户没有返回短周期额度窗口。",
+          },
+        ],
+      },
+    };
+    const { container } = render(QuotaDashboard, {
+      props: { appState: weeklyOnlyState },
+    });
+
+    expect(container.querySelector(".mini-status")?.getAttribute("data-state")).toBe(
+      "fresh",
+    );
+    expect(screen.getByText("刚刚")).toBeTruthy();
+    expect(screen.queryByText("注意")).toBeNull();
+  });
+
   it("marks the 20 percent boundary as low usage", () => {
     const lowState: AppState = {
       ...appState,
