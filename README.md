@@ -4,7 +4,7 @@ QuotaDock 是一个 Windows 优先的 Codex 额度状态工具。它以 `360 × 
 常驻悬浮条展示 5 小时与 1 周额度、重置时间、数据新鲜度和异常状态，并通过
 系统托盘提供刷新、显示/隐藏、开机启动、更新检查和退出操作。
 
-当前版本：`0.5.1`
+当前版本：`0.5.2`
 
 ## 当前能力
 
@@ -14,9 +14,9 @@ QuotaDock 是一个 Windows 优先的 Codex 额度状态工具。它以 `360 × 
 - 查询失败时保留最后一次成功快照，并明确标记失败或陈旧。
 - 后台自动刷新；低额度、临近重置和连续失败时自适应调整频率。
 - 支持托盘手动刷新、单实例、窗口拖动吸附、位置保存和开机启动。
-- 提供轻量详情页：数据来源、诊断、设置、恢复提示、账户摘要与 7 天趋势。
+- 提供轻量详情页：数据来源、软件更新、诊断、设置、恢复提示、账户摘要与 7 天趋势。
 - 可选低额度系统通知；默认关闭，启用时明确请求 Windows 通知权限。
-- 自动检查 GitHub Release 更新；下载和安装前使用应用内置公钥验证签名。
+- 自动检查 GitHub Release 更新；遵循 Windows 静态系统代理，下载和安装前使用应用内置公钥验证签名。
 
 ## 数据与隐私
 
@@ -79,6 +79,7 @@ Windows GNU 构建需要 Rust、Node.js、WebView2 与 MSYS2 UCRT64 工具链。
 - [核心信任与数据源架构决策](docs/adr/0001-signed-updates-and-structured-usage.md)
 - [v0.5.0 发布说明](docs/releases/v0.5.0.md)
 - [v0.5.1 发布说明](docs/releases/v0.5.1.md)
+- [v0.5.2 发布说明](docs/releases/v0.5.2.md)
 - [紧凑状态条设计系统](design-system/quotadock/MASTER.md)
 - [早期产品设计稿（历史资料）](docs/superpowers/specs/2026-06-18-codex-usage-tool-design.md)
 - [早期 MVP 实施计划（历史资料）](docs/superpowers/plans/2026-06-18-quotadock-mvp.md)

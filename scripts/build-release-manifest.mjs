@@ -17,6 +17,7 @@ const bytes = await readFile(installer);
 const signature = (await readFile(signatureFile, "utf8")).trim();
 const { size } = await stat(installer);
 const sha256 = createHash("sha256").update(bytes).digest("hex");
+const releaseNotes = await readReleaseNotes(version);
 const encodedFilename = filename
   .split("/")
   .map((part) => encodeURIComponent(part))
@@ -25,7 +26,7 @@ const url = `https://github.com/${repository}/releases/download/v${version}/${en
 
 const manifest = {
   version,
-  notes: `QuotaDock v${version}：结构化额度查询、签名更新、单实例、详情设置与轻量趋势。`,
+  notes: releaseNotes,
   pub_date: new Date().toISOString(),
   platforms: {
     "windows-x86_64": {
@@ -53,3 +54,24 @@ await Promise.all([
 ]);
 
 console.log(JSON.stringify({ version, filename, size, sha256 }, null, 2));
+
+async function readReleaseNotes(releaseVersion) {
+  try {
+    const markdown = await readFile(
+      resolve(`docs/releases/v${releaseVersion}.md`),
+      "utf8",
+    );
+    const highlights = markdown
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("- "))
+      .slice(0, 4)
+      .map((line) => `• ${line.slice(2).replaceAll("`", "")}`);
+    if (highlights.length > 0) {
+      return highlights.join("\n");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return `QuotaDock v${releaseVersion}：签名更新与稳定性改进。`;
+}

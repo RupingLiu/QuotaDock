@@ -3,6 +3,7 @@ use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 pub const OFFICIAL_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
+pub const LATEST_RELEASE_URL: &str = "https://github.com/RupingLiu/QuotaDock/releases/latest";
 
 pub fn show(app: &AppHandle) -> Result<(), String> {
     let window = app
@@ -22,8 +23,17 @@ pub fn hide(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn open_official_usage() -> Result<(), String> {
+    open_external_url(OFFICIAL_USAGE_URL, "打开官方用量页面")
+}
+
+#[tauri::command]
+pub fn open_latest_release() -> Result<(), String> {
+    open_external_url(LATEST_RELEASE_URL, "打开最新版下载页")
+}
+
+fn open_external_url(url: &str, operation_name: &str) -> Result<(), String> {
     let operation = wide_null("open");
-    let target = wide_null(OFFICIAL_USAGE_URL);
+    let target = wide_null(url);
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -37,7 +47,7 @@ pub fn open_official_usage() -> Result<(), String> {
     if result > 32 {
         Ok(())
     } else {
-        Err(format!("打开官方用量页面失败：ShellExecuteW 返回 {result}"))
+        Err(format!("{operation_name}失败：ShellExecuteW 返回 {result}"))
     }
 }
 

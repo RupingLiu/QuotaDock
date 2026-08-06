@@ -5,6 +5,7 @@
     AppDiagnostics,
     AppState,
     SettingsPatch,
+    UpdateStatus,
     UsageHistoryPoint,
   } from "$lib/types/usage";
   import {
@@ -28,6 +29,7 @@
   let actionError: string | null = null;
   let savingSetting: string | null = null;
   let startupEnabled = false;
+  let updateStatus: UpdateStatus | null = null;
 
   $: snapshot = appState?.latestSnapshot ?? null;
   $: history = appState?.history ?? [];
@@ -40,15 +42,57 @@
     noticeMessage ??
     appState?.statusMessage ??
     "等待首次额度更新。";
+  $: updateBusy =
+    updateStatus?.phase === "checking" || updateStatus?.phase === "downloading";
 
   onMount(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
     void loadDiagnostics();
+    void loadUpdateStatus();
+    void tauriApi.onUpdateStatus((status) => {
+      if (!disposed) updateStatus = status;
+    }).then((stopListening) => {
+      if (disposed) stopListening();
+      else unlisten = stopListening;
+    }).catch((error) => {
+      if (!disposed) actionError = errorText(error);
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   });
 
   async function loadDiagnostics(): Promise<void> {
     try {
       diagnostics = await tauriApi.getDiagnostics();
       startupEnabled = diagnostics.startupEnabled;
+    } catch (error) {
+      actionError = errorText(error);
+    }
+  }
+
+  async function loadUpdateStatus(): Promise<void> {
+    try {
+      updateStatus = await tauriApi.getUpdateStatus();
+    } catch (error) {
+      actionError = errorText(error);
+    }
+  }
+
+  async function checkUpdates(): Promise<void> {
+    actionError = null;
+    try {
+      updateStatus = await tauriApi.checkForUpdates();
+    } catch (error) {
+      actionError = errorText(error);
+    }
+  }
+
+  async function openLatestRelease(): Promise<void> {
+    try {
+      await tauriApi.openLatestRelease();
     } catch (error) {
       actionError = errorText(error);
     }
@@ -131,6 +175,40 @@
 
   function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  function updatePhaseLabel(status: UpdateStatus | null): string {
+    switch (status?.phase) {
+      case "checking":
+        return "检查中";
+      case "up-to-date":
+        return "已是最新";
+      case "available":
+        return "有新版本";
+      case "downloading":
+        return "安装中";
+      case "error":
+        return "需要处理";
+      default:
+        return "未检查";
+    }
+  }
+
+  function updateActionLabel(status: UpdateStatus | null): string {
+    switch (status?.phase) {
+      case "checking":
+        return "正在检查…";
+      case "downloading":
+        return status.progressPercent === null
+          ? "正在下载…"
+          : `下载中 ${status.progressPercent}%`;
+      case "available":
+        return "安装更新";
+      case "error":
+        return "重新检查";
+      default:
+        return "检查更新";
+    }
   }
 </script>
 
@@ -228,6 +306,64 @@
       {/if}
     </section>
   {/if}
+
+  <section
+    class:error={updateStatus?.phase === "error"}
+    class="panel update-panel"
+    aria-labelledby="software-update-heading"
+  >
+    <div class="section-heading update-heading">
+      <div>
+        <p class="section-kicker">UPDATE</p>
+        <h2 id="software-update-heading">软件更新</h2>
+      </div>
+      <span class:attention={updateStatus?.phase === "available" || updateStatus?.phase === "error"} class="update-badge">
+        {updatePhaseLabel(updateStatus)}
+      </span>
+    </div>
+    <div class="update-summary" aria-live="polite">
+      <div>
+        <p class="update-message">{updateStatus?.message ?? "正在读取更新状态…"}</p>
+        <small>
+          当前 v{updateStatus?.currentVersion ?? diagnostics?.appVersion ?? "--"}
+          · 上次检查 {formatCapturedAt(updateStatus?.checkedAt ?? null)}
+        </small>
+      </div>
+      <button
+        class="update-action primary"
+        type="button"
+        disabled={updateBusy}
+        on:click={checkUpdates}
+      >
+        {updateActionLabel(updateStatus)}
+      </button>
+    </div>
+    {#if updateStatus?.phase === "downloading" && updateStatus.progressPercent !== null}
+      <div
+        class="update-progress"
+        role="progressbar"
+        aria-label="更新下载进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow={updateStatus.progressPercent}
+      >
+        <span style={`width: ${updateStatus.progressPercent}%`}></span>
+      </div>
+    {/if}
+    {#if updateStatus?.phase === "error" || updateStatus?.phase === "available"}
+      <div class="update-recovery" role={updateStatus.phase === "error" ? "alert" : undefined}>
+        <button class="update-action secondary" type="button" on:click={openLatestRelease}>
+          浏览器下载
+        </button>
+        {#if updateStatus.technicalDetail}
+          <details>
+            <summary>技术详情</summary>
+            <code>{updateStatus.technicalDetail}</code>
+          </details>
+        {/if}
+      </div>
+    {/if}
+  </section>
 
   <section class="panel history-panel">
     <div class="section-heading">
@@ -833,6 +969,152 @@
     background: #e5f5f2;
     font-size: 0.62rem !important;
     font-weight: 700;
+  }
+
+  .update-panel {
+    border-color: rgba(15, 118, 110, 0.24);
+    background: linear-gradient(145deg, #ffffff 0%, #f3fbfa 100%);
+  }
+
+  .update-panel.error {
+    border-color: #efc3bd;
+    background: linear-gradient(145deg, #ffffff 0%, #fff8f7 100%);
+  }
+
+  .update-heading {
+    margin-bottom: 9px;
+  }
+
+  .update-badge {
+    padding: 4px 7px;
+    border-radius: 99px;
+    color: #0f6b63 !important;
+    background: #e5f5f2;
+    font-size: 0.62rem !important;
+    font-weight: 700;
+  }
+
+  .update-badge.attention {
+    color: #9a3412 !important;
+    background: #fff0e7;
+  }
+
+  .update-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .update-summary > div {
+    min-width: 0;
+  }
+
+  .update-message {
+    margin-bottom: 3px;
+    color: #253443;
+    font-size: 0.75rem;
+    font-weight: 650;
+    line-height: 1.4;
+  }
+
+  .update-summary small {
+    color: #64748b;
+    font-size: 0.64rem;
+  }
+
+  .update-action {
+    min-height: 32px;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 0.69rem;
+    font-weight: 650;
+    cursor: pointer;
+    transition: 150ms ease;
+  }
+
+  .update-action.primary {
+    border: 1px solid #0f766e;
+    color: white;
+    background: #0f766e;
+  }
+
+  .update-action.primary:hover:not(:disabled) {
+    border-color: #0b5f59;
+    background: #0b5f59;
+  }
+
+  .update-action.secondary {
+    border: 1px solid #c6d4da;
+    color: #334155;
+    background: white;
+  }
+
+  .update-action.secondary:hover {
+    color: #0f6b63;
+    border-color: #86b9b3;
+    background: #f4fbfa;
+  }
+
+  .update-action:disabled {
+    cursor: wait;
+    opacity: 0.62;
+  }
+
+  .update-progress {
+    height: 5px;
+    margin-top: 10px;
+    overflow: hidden;
+    border-radius: 99px;
+    background: #dfe8e8;
+  }
+
+  .update-progress span {
+    height: 100%;
+    display: block;
+    border-radius: inherit;
+    background: #0f766e;
+    transition: width 180ms ease;
+  }
+
+  .update-recovery {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(148, 163, 184, 0.24);
+  }
+
+  .update-recovery details {
+    min-width: 0;
+    flex: 1 1 180px;
+    color: #64748b;
+    font-size: 0.65rem;
+  }
+
+  .update-recovery summary {
+    width: max-content;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .update-recovery code {
+    display: block;
+    max-height: 92px;
+    margin-top: 7px;
+    padding: 8px;
+    overflow: auto;
+    border-radius: 7px;
+    color: #7f1d1d;
+    background: rgba(255, 255, 255, 0.78);
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 0.61rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
   }
 
   dl {

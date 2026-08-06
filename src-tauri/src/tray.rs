@@ -21,6 +21,7 @@ const MENU_VERSION: &str = "version";
 const MENU_QUIT: &str = "quit";
 const DEFAULT_MENU_STATUS: &str = "状态：就绪";
 const MENU_STATUS_RESET_DELAY: Duration = Duration::from_secs(6);
+const MAX_MENU_STATUS_CHARS: usize = 28;
 
 pub struct TrayState {
     icon: TrayIcon<Wry>,
@@ -97,6 +98,17 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
     let status_item = MenuItemBuilder::with_id(MENU_STATUS, status_label)
         .enabled(false)
         .build(app)?;
+    let update_check_running = updates::is_check_running();
+    let update_check_item = MenuItemBuilder::with_id(
+        MENU_CHECK_UPDATES,
+        if update_check_running {
+            "正在检查更新…"
+        } else {
+            "检查软件更新"
+        },
+    )
+    .enabled(!update_check_running)
+    .build(app)?;
     let version_item =
         MenuItemBuilder::with_id(MENU_VERSION, format!("版本 v{}", version::APP_VERSION))
             .enabled(false)
@@ -111,7 +123,7 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
         .text(MENU_STARTUP, startup_label)
         .text(MENU_AUTOMATIC_UPDATES, updates_label)
         .text(MENU_LOW_QUOTA_NOTIFICATIONS, notification_label)
-        .text(MENU_CHECK_UPDATES, "立即检查更新")
+        .item(&update_check_item)
         .item(&status_item)
         .item(&version_item)
         .separator()
@@ -223,13 +235,13 @@ pub fn set_menu_status(app: &AppHandle, message: impl Into<String>) {
         return;
     };
     if let Ok(mut status) = tray.menu_status.lock() {
-        *status = message.into();
+        *status = compact_menu_status(&message.into());
     }
     refresh_menu(app);
 }
 
 pub fn set_menu_status_temporarily(app: &AppHandle, message: impl Into<String>) {
-    let message = message.into();
+    let message = compact_menu_status(&message.into());
     set_menu_status(app, message.clone());
 
     let app = app.clone();
@@ -239,6 +251,25 @@ pub fn set_menu_status_temporarily(app: &AppHandle, message: impl Into<String>) 
             thread::sleep(MENU_STATUS_RESET_DELAY);
             reset_menu_status_if_current(&app, &message);
         });
+}
+
+fn compact_menu_status(message: &str) -> String {
+    let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.contains("http://") || normalized.contains("https://") {
+        return if normalized.contains("更新") {
+            "更新失败，请查看详情".to_string()
+        } else {
+            "操作失败，请查看详情".to_string()
+        };
+    }
+    if normalized.chars().count() <= MAX_MENU_STATUS_CHARS {
+        return normalized;
+    }
+    normalized
+        .chars()
+        .take(MAX_MENU_STATUS_CHARS.saturating_sub(1))
+        .chain(std::iter::once('…'))
+        .collect()
 }
 
 fn reset_menu_status_if_current(app: &AppHandle, expected: &str) {
@@ -300,4 +331,28 @@ fn toggle_main_window(app: &AppHandle) {
 fn transparent_fallback_icon() -> Image<'static> {
     const SIZE: u32 = 32;
     Image::new_owned(vec![0; (SIZE * SIZE * 4) as usize], SIZE, SIZE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compact_menu_status, MAX_MENU_STATUS_CHARS};
+
+    #[test]
+    fn menu_status_never_exposes_long_urls() {
+        let status = compact_menu_status(
+            "更新检查失败：https://github.com/example/releases/latest/download/latest.json",
+        );
+        assert_eq!(status, "更新失败，请查看详情");
+        assert!(!status.contains("http"));
+    }
+
+    #[test]
+    fn menu_status_is_single_line_and_bounded() {
+        let status = compact_menu_status(
+            "额度刷新失败\n这是一个非常非常非常非常非常非常非常非常非常非常长的技术错误",
+        );
+        assert!(!status.contains('\n'));
+        assert!(status.chars().count() <= MAX_MENU_STATUS_CHARS);
+        assert!(status.ends_with('…'));
+    }
 }

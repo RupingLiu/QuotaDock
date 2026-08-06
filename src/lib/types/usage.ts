@@ -82,3 +82,21 @@ export type AppDiagnostics = {
   startupEnabled: boolean;
   signedUpdatesEnabled: boolean;
 };
+
+export type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "available"
+  | "downloading"
+  | "error";
+
+export type UpdateStatus = {
+  currentVersion: string;
+  phase: UpdatePhase;
+  message: string;
+  technicalDetail: string | null;
+  availableVersion: string | null;
+  progressPercent: number | null;
+  checkedAt: string | null;
+};
