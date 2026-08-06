@@ -85,8 +85,9 @@ export type UpdatePhase =
   | "idle"
   | "checking"
   | "up-to-date"
-  | "available"
   | "downloading"
+  | "ready"
+  | "installing"
   | "error";
 
 export type UpdateStatus = {

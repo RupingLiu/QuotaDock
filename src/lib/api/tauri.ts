@@ -21,6 +21,7 @@ export type QuotaDockApi = {
   openOfficialUsage(): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatus>;
   checkForUpdates(): Promise<UpdateStatus>;
+  installDownloadedUpdate(): Promise<UpdateStatus>;
   openLatestRelease(): Promise<void>;
   onUpdateStatus(listener: (status: UpdateStatus) => void): Promise<UnlistenFn>;
 };
@@ -86,6 +87,10 @@ export const tauriApi: QuotaDockApi = {
     hasTauriRuntime()
       ? invoke<UpdateStatus>("check_for_updates")
       : Promise.resolve(browserPreviewCheckedUpdateStatus()),
+  installDownloadedUpdate: () =>
+    hasTauriRuntime()
+      ? invoke<UpdateStatus>("install_downloaded_update")
+      : Promise.resolve(browserPreviewInstallingUpdateStatus()),
   openLatestRelease: () =>
     hasTauriRuntime() ? invoke<void>("open_latest_release") : Promise.resolve(),
   onUpdateStatus: (listener) =>
@@ -117,19 +122,30 @@ function defaultAppState(statusMessage: string): AppState {
 }
 
 function defaultUpdateStatus(): UpdateStatus {
-  if (
-    import.meta.env.DEV &&
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("fixture") === "update-error"
-  ) {
+  const fixture =
+    import.meta.env.DEV && typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("fixture")
+      : null;
+  if (fixture === "update-error") {
     return {
-      currentVersion: "0.5.3",
+      currentVersion: "0.5.4",
       phase: "error",
       message: "暂时无法连接更新服务，请检查网络或代理后重试。",
       technicalDetail:
         "获取签名更新清单失败：error sending request for url (https://github.com/RupingLiu/QuotaDock/releases/latest/download/latest.json)",
       availableVersion: null,
       progressPercent: null,
+      checkedAt: `unix:${Math.floor(Date.now() / 1000)}`,
+    };
+  }
+  if (fixture === "update-ready") {
+    return {
+      currentVersion: "preview",
+      phase: "ready",
+      message: "新版本已下载并通过签名校验，可以立即安装。",
+      technicalDetail: null,
+      availableVersion: "next",
+      progressPercent: 100,
       checkedAt: `unix:${Math.floor(Date.now() / 1000)}`,
     };
   }
@@ -152,6 +168,15 @@ function browserPreviewCheckedUpdateStatus(): UpdateStatus {
     phase: "up-to-date",
     message: "浏览器预览模式未连接桌面更新服务。",
     checkedAt: `unix:${Math.floor(Date.now() / 1000)}`,
+  };
+}
+
+function browserPreviewInstallingUpdateStatus(): UpdateStatus {
+  const status = defaultUpdateStatus();
+  return {
+    ...status,
+    phase: "installing",
+    message: "浏览器预览模式不会安装桌面更新。",
   };
 }
 

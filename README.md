@@ -1,10 +1,10 @@
 # QuotaDock
 
-QuotaDock 是一个 Windows 优先的 Codex 额度状态工具。它以 `360 × 36px`
+QuotaDock 是一个 Windows 优先的 Codex 额度状态工具。它以 `260 × 36px`
 常驻悬浮条展示 1 周额度、重置时间、数据新鲜度和异常状态，并通过
 系统托盘提供刷新、显示/隐藏、开机启动、更新检查和退出操作。
 
-当前版本：`0.5.3`
+当前版本：`0.5.4`
 
 ## 当前能力
 
@@ -16,7 +16,7 @@ QuotaDock 是一个 Windows 优先的 Codex 额度状态工具。它以 `360 × 
 - 支持托盘手动刷新、单实例、窗口拖动吸附、位置保存和开机启动。
 - 提供轻量详情页：数据来源、软件更新、诊断、设置、恢复提示、账户摘要与 7 天趋势。
 - 可选低额度系统通知；默认关闭，启用时明确请求 Windows 通知权限。
-- 自动检查 GitHub Release 更新；遵循 Windows 静态系统代理，下载和安装前使用应用内置公钥验证签名。
+- 启动后及每 6 小时自动检查 GitHub Release；发现新版时在后台静默下载并验证签名，完成后用系统通知轻提示，由用户决定何时安装。
 
 ## 数据与隐私
 
@@ -26,7 +26,10 @@ QuotaDock 在 Tauri 应用数据目录的 `quotadock-state.json` 中保存最新
 仅保留最近 3 份恢复备份。
 
 更新器只读取本项目 GitHub Release 的 `latest.json`，并以应用内置 Ed25519
-公钥验证安装包签名。SHA-256 仍随发布资产提供，用于人工核验和旧版本兼容。
+公钥验证安装包签名，同时核对安装包内嵌 ProductVersion 和本机最高可信版本。
+已验证的待安装包以单文件原子方式写入应用缓存目录，并在版本撤回、安装后的
+下一次检查或被新版替代时清理；通知去重与最高可信版本记录保存在应用数据目录。
+SHA-256 仍随发布资产提供，用于人工核验和旧版本兼容。
 Windows 安装包当前未配置商业 Authenticode 代码签名证书，因此 SmartScreen
 仍可能显示“未知发布者”；这与应用内更新签名是两条独立信任链。
 
@@ -81,6 +84,7 @@ Windows GNU 构建需要 Rust、Node.js、WebView2 与 MSYS2 UCRT64 工具链。
 - [v0.5.1 发布说明](docs/releases/v0.5.1.md)
 - [v0.5.2 发布说明](docs/releases/v0.5.2.md)
 - [v0.5.3 发布说明](docs/releases/v0.5.3.md)
+- [v0.5.4 发布说明](docs/releases/v0.5.4.md)
 - [紧凑状态条设计系统](design-system/quotadock/MASTER.md)
 - [早期产品设计稿（历史资料）](docs/superpowers/specs/2026-06-18-codex-usage-tool-design.md)
 - [早期 MVP 实施计划（历史资料）](docs/superpowers/plans/2026-06-18-quotadock-mvp.md)
