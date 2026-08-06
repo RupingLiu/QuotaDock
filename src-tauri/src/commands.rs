@@ -134,13 +134,10 @@ fn adaptive_refresh_interval(state: &AppState) -> Duration {
 }
 
 fn is_low_usage_snapshot(snapshot: &QuotaSnapshot) -> bool {
-    [&snapshot.five_hour, &snapshot.weekly]
-        .iter()
-        .any(|reading| {
-            reading
-                .remaining_percent
-                .is_some_and(|percent| percent <= LOW_USAGE_THRESHOLD_PERCENT)
-        })
+    snapshot
+        .weekly
+        .remaining_percent
+        .is_some_and(|percent| percent <= LOW_USAGE_THRESHOLD_PERCENT)
 }
 
 fn imminent_reset_refresh_interval(snapshot: &QuotaSnapshot) -> Option<Duration> {
@@ -155,17 +152,16 @@ fn imminent_reset_refresh_interval_at(
     snapshot: &QuotaSnapshot,
     now_unix_seconds: i64,
 ) -> Option<Duration> {
-    [&snapshot.five_hour, &snapshot.weekly]
-        .iter()
-        .flat_map(|reading| {
-            let countdown = reading.reset_countdown_seconds;
-            let absolute = reading
-                .reset_at
-                .as_deref()
-                .and_then(unix_reset_seconds)
-                .map(|reset| reset - now_unix_seconds);
-            [countdown, absolute].into_iter().flatten()
-        })
+    let countdown = snapshot.weekly.reset_countdown_seconds;
+    let absolute = snapshot
+        .weekly
+        .reset_at
+        .as_deref()
+        .and_then(unix_reset_seconds)
+        .map(|reset| reset - now_unix_seconds);
+    [countdown, absolute]
+        .into_iter()
+        .flatten()
         .filter(|seconds| {
             let watch = AUTO_RESET_WATCH_WINDOW.as_secs() as i64;
             *seconds >= -watch && *seconds <= watch
@@ -458,7 +454,7 @@ fn fetch_usage_from_codex_cli() -> Result<QuotaSnapshot, String> {
         parse_status_text_with_source(&output, ParseClock::now(), SnapshotSource::CodexCli);
     result.snapshot.status_message = "已通过 Codex CLI /status 兼容模式更新额度。".to_string();
     result.snapshot.raw_text.clear();
-    if result.snapshot.has_any_usage() {
+    if result.snapshot.has_usage() {
         Ok(result.snapshot)
     } else {
         Err("Codex CLI 没有返回可识别的额度，请稍后重试。".to_string())
@@ -1320,7 +1316,7 @@ fn status_command_waiting_for_enter(output: &str) -> bool {
 
 fn codex_status_output_ready(output: &str) -> bool {
     let parsed = parse_status_text_with_source(output, ParseClock::now(), SnapshotSource::CodexCli);
-    parsed.snapshot.has_any_usage()
+    parsed.snapshot.has_usage()
 }
 
 fn status_output_ready_after_settle(output: &str, quiet_for: Duration) -> bool {
@@ -1332,26 +1328,11 @@ fn low_quota_notification(
     current: &QuotaSnapshot,
 ) -> Option<String> {
     let previous = previous?;
-    let mut windows = Vec::new();
-    for (label, old, new) in [
-        (
-            "5 小时",
-            previous.five_hour.remaining_percent,
-            current.five_hour.remaining_percent,
-        ),
-        (
-            "1 周",
-            previous.weekly.remaining_percent,
-            current.weekly.remaining_percent,
-        ),
-    ] {
-        if old.is_some_and(|percent| percent > LOW_USAGE_THRESHOLD_PERCENT)
-            && new.is_some_and(|percent| percent <= LOW_USAGE_THRESHOLD_PERCENT)
-        {
-            windows.push(format!("{label}剩余 {}%", new.unwrap_or_default()));
-        }
-    }
-    (!windows.is_empty()).then(|| windows.join("，"))
+    let old = previous.weekly.remaining_percent;
+    let new = current.weekly.remaining_percent;
+    (old.is_some_and(|percent| percent > LOW_USAGE_THRESHOLD_PERCENT)
+        && new.is_some_and(|percent| percent <= LOW_USAGE_THRESHOLD_PERCENT))
+    .then(|| format!("1 周剩余 {}%", new.unwrap_or_default()))
 }
 
 fn notify_low_quota(app: &AppHandle, message: &str) {
@@ -1575,24 +1556,15 @@ mod tests {
         }
     }
 
-    fn snapshot(
-        five_hour_percent: u8,
-        weekly_percent: u8,
-        reset_countdown_seconds: Option<i64>,
-    ) -> QuotaSnapshot {
+    fn snapshot(weekly_percent: u8, reset_countdown_seconds: Option<i64>) -> QuotaSnapshot {
         QuotaSnapshot {
             id: "snap-1".to_string(),
             source: SnapshotSource::CodexCli,
             captured_at: "unix:1000".to_string(),
-            five_hour: QuotaReading {
-                remaining_percent: Some(five_hour_percent),
-                reset_at: None,
-                reset_countdown_seconds,
-            },
             weekly: QuotaReading {
                 remaining_percent: Some(weekly_percent),
                 reset_at: None,
-                reset_countdown_seconds: None,
+                reset_countdown_seconds,
             },
             plan_type: None,
             credits_balance: None,
@@ -1612,7 +1584,7 @@ mod tests {
 
     #[test]
     fn recognizes_interactive_status_output() {
-        let output = "5h limit: [======] 44% left (resets 22:04)\nWeekly limit: [======] 59% left (resets 07:00 on 25 Jun)";
+        let output = "Weekly limit: [======] 59% left (resets 07:00 on 25 Jun)";
 
         assert!(super::codex_status_output_ready(output));
     }
@@ -1626,7 +1598,7 @@ mod tests {
 
     #[test]
     fn waits_for_status_output_to_settle_before_accepting_it() {
-        let partial = "5h limit: [======] 44% left (resets 22:04)";
+        let partial = "Weekly limit: [======] 44% left (resets 22:04)";
 
         assert!(!super::status_output_ready_after_settle(
             partial,
@@ -1663,7 +1635,7 @@ mod tests {
 
     #[test]
     fn auto_refresh_keeps_base_interval_for_healthy_usage() {
-        let state = app_state(snapshot(75, 64, Some(3600)));
+        let state = app_state(snapshot(64, Some(3600)));
 
         assert_eq!(
             adaptive_refresh_interval(&state),
@@ -1673,7 +1645,7 @@ mod tests {
 
     #[test]
     fn auto_refresh_accelerates_when_usage_is_low() {
-        let outcome = Ok(refresh_result(snapshot(20, 64, Some(3600))));
+        let outcome = Ok(refresh_result(snapshot(20, Some(3600))));
 
         let schedule = next_auto_refresh_schedule(&outcome, 2);
 
@@ -1684,7 +1656,7 @@ mod tests {
     #[test]
     fn auto_refresh_schedules_after_imminent_reset() {
         let reset_in = Duration::from_secs(42);
-        let state = app_state(snapshot(75, 64, Some(reset_in.as_secs() as i64)));
+        let state = app_state(snapshot(64, Some(reset_in.as_secs() as i64)));
 
         assert_eq!(
             adaptive_refresh_interval(&state),
@@ -1696,7 +1668,6 @@ mod tests {
     fn auto_refresh_ignores_distant_reset_countdown() {
         let reset_after_watch_window = AUTO_RESET_WATCH_WINDOW + Duration::from_secs(1);
         let state = app_state(snapshot(
-            75,
             64,
             Some(reset_after_watch_window.as_secs() as i64),
         ));
@@ -1709,8 +1680,8 @@ mod tests {
 
     #[test]
     fn auto_refresh_uses_structured_absolute_reset_time() {
-        let mut value = snapshot(75, 64, None);
-        value.five_hour.reset_at = Some("unix:1042".to_string());
+        let mut value = snapshot(64, None);
+        value.weekly.reset_at = Some("unix:1042".to_string());
 
         assert_eq!(
             super::imminent_reset_refresh_interval_at(&value, 1000),
@@ -1720,8 +1691,8 @@ mod tests {
 
     #[test]
     fn auto_refresh_ignores_long_expired_absolute_reset_time() {
-        let mut value = snapshot(75, 64, None);
-        value.five_hour.reset_at = Some("unix:1000".to_string());
+        let mut value = snapshot(64, None);
+        value.weekly.reset_at = Some("unix:1000".to_string());
 
         assert_eq!(
             super::imminent_reset_refresh_interval_at(&value, 2000),
@@ -1730,10 +1701,22 @@ mod tests {
     }
 
     #[test]
+    fn low_quota_notification_reports_the_weekly_threshold_crossing() {
+        let previous = snapshot(21, None);
+        let current = snapshot(20, None);
+
+        assert_eq!(
+            super::low_quota_notification(Some(&previous), &current).as_deref(),
+            Some("1 周剩余 20%")
+        );
+        assert!(super::low_quota_notification(Some(&current), &current).is_none());
+    }
+
+    #[test]
     fn auto_refresh_uses_failure_backoff_for_unsuccessful_results() {
         let state = AppState {
             version: STATE_VERSION,
-            latest_snapshot: Some(snapshot(10, 64, Some(30))),
+            latest_snapshot: Some(snapshot(64, Some(30))),
             storage_status: StorageStatus::Ready,
             storage_path: None,
             backup_path: None,
@@ -1783,6 +1766,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(snapshot.source, SnapshotSource::CodexAppServer);
-        assert!(snapshot.has_any_usage());
+        assert!(snapshot.has_usage());
     }
 }

@@ -16,11 +16,11 @@
 ## Layout
 
 ```text
-[state]  5小时 72% 2h14m  |  1周 46% 6/23 09:00  [3m] [...]
+[state]  1周 46% 6/23 09:00  [3m] [...]
 ```
 
 - Default size: `360 × 36px`; minimum supported width: `300px`.
-- Grid: status dot, two equal quota groups, freshness, menu button.
+- Grid: status dot, weekly quota group, freshness, menu button.
 - Outer padding: `8px` horizontal, `3px` vertical.
 - Menu hit target: `24 × 24px`.
 - Below `320px`, hide reset time but keep the short freshness/error state visible.
@@ -66,10 +66,10 @@ warning color and a literal `!`, not orange alone.
 - The panel is an explanation and control surface, not a second always-on dashboard.
 - Use a calm off-white canvas, white cards, teal trust/accent color, and a single-column
   reading order suitable for a fixed `440 × 600px` Windows window.
-- Reading order: current status → recovery alert → two quota cards → provenance metadata
+- Reading order: current status → recovery alert → weekly quota card → provenance metadata
   → optional account summary → small trend → settings → diagnostics/official link.
-- Quota cards use percent, progress, and reset time. The small trend shows at most two
-  clearly labeled series and never invents forecasts.
+- The quota card uses percent, progress, and reset time. The small trend shows one clearly
+  labeled weekly series and never invents forecasts.
 - Settings use native semantic checkboxes styled as compact switches; every row includes
   a one-line consequence description.
 - Long filesystem paths are truncated visually but retained in `title` for inspection.
@@ -104,7 +104,7 @@ Countdown values are derived from `capturedAt + resetCountdownSeconds`, refreshe
 ## Delivery Checklist
 
 - [ ] 360×36 and 300×36 have no horizontal/vertical overflow.
-- [ ] Percentages, state, and menu remain visible at the narrow breakpoint.
+- [ ] Percentage, state, and menu remain visible at the narrow breakpoint.
 - [ ] Light and dark themes maintain readable contrast.
 - [ ] Fresh, busy, stale, error, partial, empty, and low-quota states are distinct.
 - [ ] Menu is keyboard reachable and has a visible focus ring.

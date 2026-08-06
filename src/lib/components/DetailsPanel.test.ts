@@ -13,16 +13,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const appState: AppState = {
-  version: 3,
+  version: 4,
   latestSnapshot: {
     id: "app-server-1",
     source: "codex-app-server",
     capturedAt: "unix:1781769600",
-    fiveHour: {
-      remainingPercent: 72,
-      resetAt: "unix:1781773200",
-      resetCountdownSeconds: null,
-    },
     weekly: {
       remainingPercent: 46,
       resetAt: "unix:1782190800",
@@ -42,12 +37,10 @@ const appState: AppState = {
   history: [
     {
       capturedAt: "unix:1781760000",
-      fiveHourRemainingPercent: 84,
       weeklyRemainingPercent: 51,
     },
     {
       capturedAt: "unix:1781769600",
-      fiveHourRemainingPercent: 72,
       weeklyRemainingPercent: 46,
     },
   ],
@@ -88,7 +81,7 @@ beforeEach(() => {
     }
     if (command === "get_update_status") {
       return Promise.resolve({
-        currentVersion: "0.5.2",
+        currentVersion: "0.5.3",
         phase: "idle",
         message: "尚未检查软件更新。",
         technicalDetail: null,
@@ -99,7 +92,7 @@ beforeEach(() => {
     }
     if (command === "check_for_updates") {
       return Promise.resolve({
-        currentVersion: "0.5.2",
+        currentVersion: "0.5.3",
         phase: "error",
         message: "暂时无法连接更新服务，请检查网络或代理后重试。",
         technicalDetail:
@@ -126,10 +119,12 @@ describe("DetailsPanel", () => {
 
     expect(screen.getByText("额度详情")).toBeTruthy();
     expect(screen.getByText("Codex App Server")).toBeTruthy();
-    expect(screen.getByText("72%")).toBeTruthy();
     expect(screen.getByText("46%")).toBeTruthy();
     expect(screen.getByText("2 个采样点")).toBeTruthy();
-    expect(container.querySelectorAll(".series").length).toBe(2);
+    expect(screen.getByText("1 周额度趋势")).toBeTruthy();
+    expect(container.querySelectorAll(".quota-card")).toHaveLength(1);
+    expect(container.querySelectorAll(".series")).toHaveLength(1);
+    expect(container.textContent).not.toContain(["5", "小时"].join(""));
     await waitFor(() => {
       expect(screen.getByText("0.5.0")).toBeTruthy();
     });

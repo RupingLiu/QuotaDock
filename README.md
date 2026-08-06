@@ -1,15 +1,15 @@
 # QuotaDock
 
 QuotaDock 是一个 Windows 优先的 Codex 额度状态工具。它以 `360 × 36px`
-常驻悬浮条展示 5 小时与 1 周额度、重置时间、数据新鲜度和异常状态，并通过
+常驻悬浮条展示 1 周额度、重置时间、数据新鲜度和异常状态，并通过
 系统托盘提供刷新、显示/隐藏、开机启动、更新检查和退出操作。
 
-当前版本：`0.5.2`
+当前版本：`0.5.3`
 
 ## 当前能力
 
 - 优先通过 Codex App Server 的结构化接口读取额度；PTY `/status` 仅作兼容降级。
-- 显示 OpenAI 当前提供的额度窗口及动态重置倒计时；未提供的 5 小时窗口按可选能力处理。
+- 显示 OpenAI 当前提供的 1 周额度及动态重置倒计时。
 - 区分新鲜、读取中、失败、陈旧、数据不完整、低额度和空数据状态。
 - 查询失败时保留最后一次成功快照，并明确标记失败或陈旧。
 - 后台自动刷新；低额度、临近重置和连续失败时自适应调整频率。
@@ -80,6 +80,7 @@ Windows GNU 构建需要 Rust、Node.js、WebView2 与 MSYS2 UCRT64 工具链。
 - [v0.5.0 发布说明](docs/releases/v0.5.0.md)
 - [v0.5.1 发布说明](docs/releases/v0.5.1.md)
 - [v0.5.2 发布说明](docs/releases/v0.5.2.md)
+- [v0.5.3 发布说明](docs/releases/v0.5.3.md)
 - [紧凑状态条设计系统](design-system/quotadock/MASTER.md)
 - [早期产品设计稿（历史资料）](docs/superpowers/specs/2026-06-18-codex-usage-tool-design.md)
 - [早期 MVP 实施计划（历史资料）](docs/superpowers/plans/2026-06-18-quotadock-mvp.md)

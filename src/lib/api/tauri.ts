@@ -101,7 +101,7 @@ function hasTauriRuntime(): boolean {
 function defaultAppState(statusMessage: string): AppState {
   const previewSnapshot = browserPreviewSnapshot();
   return {
-    version: 3,
+    version: 4,
     latestSnapshot: previewSnapshot,
     storageStatus: "missing",
     storagePath: null,
@@ -123,7 +123,7 @@ function defaultUpdateStatus(): UpdateStatus {
     new URLSearchParams(window.location.search).get("fixture") === "update-error"
   ) {
     return {
-      currentVersion: "0.5.2",
+      currentVersion: "0.5.3",
       phase: "error",
       message: "暂时无法连接更新服务，请检查网络或代理后重试。",
       technicalDetail:
@@ -169,11 +169,6 @@ function browserPreviewSnapshot(): QuotaSnapshot | null {
     id: capturedAt,
     source: "codex-app-server",
     capturedAt,
-    fiveHour: {
-      remainingPercent: null,
-      resetAt: null,
-      resetCountdownSeconds: null,
-    },
     weekly: {
       remainingPercent: 76,
       resetAt: null,
@@ -183,12 +178,7 @@ function browserPreviewSnapshot(): QuotaSnapshot | null {
     creditsBalance: null,
     resetCreditsAvailable: null,
     rawText: "",
-    statusMessage: "已通过 Codex app-server 更新 1 周额度；当前接口未提供 5 小时额度。",
-    warnings: [
-      {
-        code: "missing-five-hour",
-        message: "当前账户没有返回短周期额度窗口。",
-      },
-    ],
+    statusMessage: "已通过 Codex app-server 更新 1 周额度。",
+    warnings: [],
   };
 }

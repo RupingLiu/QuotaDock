@@ -26,11 +26,6 @@ const snapshot: QuotaSnapshot = {
   id: "snapshot-1",
   source: "pasted-status",
   capturedAt: "2026-06-18T08:00:00Z",
-  fiveHour: {
-    remainingPercent: 72,
-    resetAt: null,
-    resetCountdownSeconds: 8100,
-  },
   weekly: {
     remainingPercent: 46,
     resetAt: "2026-06-23T09:00:00Z",
@@ -40,17 +35,17 @@ const snapshot: QuotaSnapshot = {
   creditsBalance: null,
   resetCreditsAvailable: null,
   rawText: "status",
-  statusMessage: "已更新 5 小时与 1 周额度。",
+  statusMessage: "已更新 1 周额度。",
   warnings: [],
 };
 
 const appState: AppState = {
-  version: 3,
+  version: 4,
   latestSnapshot: snapshot,
   storageStatus: "ready",
   storagePath: null,
   backupPath: null,
-  statusMessage: "已更新 5 小时与 1 周额度。",
+  statusMessage: "已更新 1 周额度。",
   history: [],
   settings: {
     automaticUpdateChecks: true,
@@ -60,14 +55,14 @@ const appState: AppState = {
 };
 
 describe("QuotaDashboard", () => {
-  it("renders the Chinese data deck with both quota windows", () => {
+  it("renders one weekly quota row without the removed window", () => {
     const { container } = render(QuotaDashboard, { props: { appState } });
 
     expect(screen.queryByText("剩余用量")).toBeNull();
-    expect(screen.getByText("5小时额度")).toBeTruthy();
     expect(screen.getByText("1周额度")).toBeTruthy();
-    expect(screen.getByTestId("five-hour-value").textContent).toContain("72%");
     expect(screen.getByTestId("weekly-value").textContent).toContain("46%");
+    expect(container.querySelectorAll(".quota-row")).toHaveLength(1);
+    expect(container.textContent).not.toContain(["5", "小时"].join(""));
     expect(container.querySelector(".panel-chevron")).toBeNull();
     expect(
       container
@@ -82,29 +77,35 @@ describe("QuotaDashboard", () => {
   it("shows unknown values as double dashes", () => {
     render(QuotaDashboard, { props: { appState: null } });
 
-    expect(screen.getByTestId("five-hour-value").textContent).toContain("--");
     expect(screen.getByTestId("weekly-value").textContent).toContain("--");
   });
 
-  it("shows reset timing for both quota windows", () => {
+  it("shows the weekly reset timing", () => {
     render(QuotaDashboard, { props: { appState } });
 
-    expect(screen.getByTestId("five-hour-reset").textContent).toContain(
-      "2h15m",
-    );
     expect(screen.getByTestId("weekly-reset").textContent).toContain("6/23");
-    expect(screen.getByText("重置 2小时15分钟后")).toBeTruthy();
   });
 
   it("updates the visible countdown while the bar remains open", async () => {
-    render(QuotaDashboard, { props: { appState } });
+    const countdownState: AppState = {
+      ...appState,
+      latestSnapshot: {
+        ...snapshot,
+        weekly: {
+          remainingPercent: 46,
+          resetAt: null,
+          resetCountdownSeconds: 8100,
+        },
+      },
+    };
+    render(QuotaDashboard, { props: { appState: countdownState } });
 
-    expect(screen.getByTestId("five-hour-reset").textContent).toContain(
+    expect(screen.getByTestId("weekly-reset").textContent).toContain(
       "2h15m",
     );
     await vi.advanceTimersByTimeAsync(60_000);
     await tick();
-    expect(screen.getByTestId("five-hour-reset").textContent).toContain(
+    expect(screen.getByTestId("weekly-reset").textContent).toContain(
       "2h14m",
     );
   });
@@ -187,7 +188,7 @@ describe("QuotaDashboard", () => {
       "error",
     );
     expect(screen.getByText(/刷新失败，当前显示上次成功数据/)).toBeTruthy();
-    expect(screen.getByTestId("five-hour-value").textContent).toContain("72%");
+    expect(screen.getByTestId("weekly-value").textContent).toContain("46%");
   });
 
   it("describes a first-load failure without claiming that old values exist", () => {
@@ -218,42 +219,13 @@ describe("QuotaDashboard", () => {
     expect(screen.getByText(/数据不完整或存储已恢复/)).toBeTruthy();
   });
 
-  it("treats an unavailable optional five-hour window as a fresh weekly reading", () => {
-    const weeklyOnlyState: AppState = {
-      ...appState,
-      latestSnapshot: {
-        ...snapshot,
-        fiveHour: {
-          remainingPercent: null,
-          resetAt: null,
-          resetCountdownSeconds: null,
-        },
-        warnings: [
-          {
-            code: "missing-five-hour",
-            message: "当前账户没有返回短周期额度窗口。",
-          },
-        ],
-      },
-    };
-    const { container } = render(QuotaDashboard, {
-      props: { appState: weeklyOnlyState },
-    });
-
-    expect(container.querySelector(".mini-status")?.getAttribute("data-state")).toBe(
-      "fresh",
-    );
-    expect(screen.getByText("刚刚")).toBeTruthy();
-    expect(screen.queryByText("注意")).toBeNull();
-  });
-
   it("marks the 20 percent boundary as low usage", () => {
     const lowState: AppState = {
       ...appState,
       latestSnapshot: {
         ...snapshot,
-        fiveHour: {
-          ...snapshot.fiveHour,
+        weekly: {
+          ...snapshot.weekly,
           remainingPercent: 20,
         },
       },

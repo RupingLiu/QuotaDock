@@ -11,11 +11,6 @@ const snapshot: QuotaSnapshot = {
   id: "snap-1",
   source: "codex-cli",
   capturedAt: "unix:1000",
-  fiveHour: {
-    remainingPercent: 72,
-    resetAt: null,
-    resetCountdownSeconds: 3600,
-  },
   weekly: {
     remainingPercent: 46,
     resetAt: null,
@@ -66,7 +61,7 @@ describe("foreground refresh freshness", () => {
   it("keeps the last snapshot but exposes unsuccessful refreshes as errors", () => {
     const state = new UsageState();
     const appState: AppState = {
-      version: 3,
+      version: 4,
       latestSnapshot: snapshot,
       storageStatus: "ready",
       storagePath: null,
