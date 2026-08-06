@@ -30,6 +30,7 @@
   let savingSetting: string | null = null;
   let startupEnabled = false;
   let updateStatus: UpdateStatus | null = null;
+  let updateStatusRevision = 0;
 
   $: snapshot = appState?.latestSnapshot ?? null;
   $: history = appState?.history ?? [];
@@ -42,21 +43,35 @@
     appState?.statusMessage ??
     "等待首次额度更新。";
   $: updateBusy =
-    updateStatus?.phase === "checking" || updateStatus?.phase === "downloading";
+    updateStatus?.phase === "checking" ||
+    updateStatus?.phase === "downloading" ||
+    updateStatus?.phase === "installing";
 
   onMount(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void loadDiagnostics();
-    void loadUpdateStatus();
-    void tauriApi.onUpdateStatus((status) => {
-      if (!disposed) updateStatus = status;
-    }).then((stopListening) => {
-      if (disposed) stopListening();
-      else unlisten = stopListening;
-    }).catch((error) => {
-      if (!disposed) actionError = errorText(error);
-    });
+    void (async () => {
+      try {
+        const stopListening = await tauriApi.onUpdateStatus((status) => {
+          updateStatusRevision += 1;
+          if (!disposed) updateStatus = status;
+        });
+        if (disposed) {
+          stopListening();
+          return;
+        }
+        unlisten = stopListening;
+
+        const revisionBeforeSnapshot = updateStatusRevision;
+        const snapshot = await tauriApi.getUpdateStatus();
+        if (!disposed && revisionBeforeSnapshot === updateStatusRevision) {
+          updateStatus = snapshot;
+        }
+      } catch (error) {
+        if (!disposed) actionError = errorText(error);
+      }
+    })();
     return () => {
       disposed = true;
       unlisten?.();
@@ -72,21 +87,40 @@
     }
   }
 
-  async function loadUpdateStatus(): Promise<void> {
+  async function checkUpdates(): Promise<void> {
+    actionError = null;
+    const actionRevision = ++updateStatusRevision;
     try {
-      updateStatus = await tauriApi.getUpdateStatus();
+      const status = await tauriApi.checkForUpdates();
+      if (actionRevision === updateStatusRevision) {
+        updateStatus = status;
+        updateStatusRevision += 1;
+      }
     } catch (error) {
       actionError = errorText(error);
     }
   }
 
-  async function checkUpdates(): Promise<void> {
+  async function installDownloadedUpdate(): Promise<void> {
     actionError = null;
+    const actionRevision = ++updateStatusRevision;
     try {
-      updateStatus = await tauriApi.checkForUpdates();
+      const status = await tauriApi.installDownloadedUpdate();
+      if (actionRevision === updateStatusRevision) {
+        updateStatus = status;
+        updateStatusRevision += 1;
+      }
     } catch (error) {
       actionError = errorText(error);
     }
+  }
+
+  async function runUpdateAction(): Promise<void> {
+    if (updateStatus?.phase === "ready") {
+      await installDownloadedUpdate();
+      return;
+    }
+    await checkUpdates();
   }
 
   async function openLatestRelease(): Promise<void> {
@@ -179,9 +213,11 @@
         return "检查中";
       case "up-to-date":
         return "已是最新";
-      case "available":
-        return "有新版本";
       case "downloading":
+        return "下载中";
+      case "ready":
+        return "可安装";
+      case "installing":
         return "安装中";
       case "error":
         return "需要处理";
@@ -198,8 +234,10 @@
         return status.progressPercent === null
           ? "正在下载…"
           : `下载中 ${status.progressPercent}%`;
-      case "available":
-        return "安装更新";
+      case "ready":
+        return "立即安装";
+      case "installing":
+        return "正在安装…";
       case "error":
         return "重新检查";
       default:
@@ -302,12 +340,16 @@
         <p class="section-kicker">UPDATE</p>
         <h2 id="software-update-heading">软件更新</h2>
       </div>
-      <span class:attention={updateStatus?.phase === "available" || updateStatus?.phase === "error"} class="update-badge">
+      <span
+        class:attention={updateStatus?.phase === "error"}
+        class:ready={updateStatus?.phase === "ready"}
+        class="update-badge"
+      >
         {updatePhaseLabel(updateStatus)}
       </span>
     </div>
-    <div class="update-summary" aria-live="polite">
-      <div>
+    <div class="update-summary">
+      <div class="update-copy" role="status" aria-live="polite" aria-atomic="true">
         <p class="update-message">{updateStatus?.message ?? "正在读取更新状态…"}</p>
         <small>
           当前 v{updateStatus?.currentVersion ?? diagnostics?.appVersion ?? "--"}
@@ -318,7 +360,7 @@
         class="update-action primary"
         type="button"
         disabled={updateBusy}
-        on:click={checkUpdates}
+        on:click={runUpdateAction}
       >
         {updateActionLabel(updateStatus)}
       </button>
@@ -335,8 +377,8 @@
         <span style={`width: ${updateStatus.progressPercent}%`}></span>
       </div>
     {/if}
-    {#if updateStatus?.phase === "error" || updateStatus?.phase === "available"}
-      <div class="update-recovery" role={updateStatus.phase === "error" ? "alert" : undefined}>
+    {#if updateStatus?.phase === "error"}
+      <div class="update-recovery">
         <button class="update-action secondary" type="button" on:click={openLatestRelease}>
           浏览器下载
         </button>
@@ -381,7 +423,7 @@
     <label class="setting-row">
       <span>
         <strong>自动检查更新</strong>
-        <small>启动后静默检查，仅在有新版本时提示</small>
+        <small>启动后及每 6 小时静默检查并准备更新，完成后轻提示</small>
       </span>
       <input
         type="checkbox"
@@ -937,6 +979,11 @@
     background: #fff0e7;
   }
 
+  .update-badge.ready {
+    color: #166534 !important;
+    background: #eaf7ee;
+  }
+
   .update-summary {
     display: flex;
     align-items: center;
@@ -944,7 +991,7 @@
     gap: 14px;
   }
 
-  .update-summary > div {
+  .update-copy {
     min-width: 0;
   }
 

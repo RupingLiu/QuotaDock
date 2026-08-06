@@ -662,10 +662,6 @@
       grid-template-columns: 8px minmax(0, 1fr) auto 24px;
       column-gap: 4px;
     }
-
-    .reset-time {
-      display: none;
-    }
   }
 
   .sr-only {

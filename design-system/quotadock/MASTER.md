@@ -1,7 +1,7 @@
 # QuotaDock Design System
 
 **Product shape:** Glanceable Windows desktop status strip
-**Primary surface:** `360 × 36px` floating bar
+**Primary surface:** `260 × 36px` floating bar
 **Secondary surfaces:** `440 × 600px` on-demand details panel + native tray/context menu
 **Style:** Compact, calm, trustworthy, data-first
 
@@ -19,11 +19,11 @@
 [state]  1周 46% 6/23 09:00  [3m] [...]
 ```
 
-- Default size: `360 × 36px`; minimum supported width: `300px`.
+- Default size: `260 × 36px`; minimum supported width: `240px`.
 - Grid: status dot, weekly quota group, freshness, menu button.
 - Outer padding: `8px` horizontal, `3px` vertical.
 - Menu hit target: `24 × 24px`.
-- Below `320px`, hide reset time but keep the short freshness/error state visible.
+- At the `240px` compatibility width, truncate reset text only after preserving the percentage, freshness/error state, and menu.
 - The full non-interactive surface remains draggable; the menu button is not a drag target.
 
 ## Color Tokens
@@ -103,7 +103,7 @@ Countdown values are derived from `capturedAt + resetCountdownSeconds`, refreshe
 
 ## Delivery Checklist
 
-- [ ] 360×36 and 300×36 have no horizontal/vertical overflow.
+- [ ] 260×36 and 240×36 have no horizontal/vertical overflow.
 - [ ] Percentage, state, and menu remain visible at the narrow breakpoint.
 - [ ] Light and dark themes maintain readable contrast.
 - [ ] Fresh, busy, stale, error, partial, empty, and low-quota states are distinct.

@@ -61,6 +61,11 @@ describe("QuotaDashboard", () => {
     expect(screen.queryByText("剩余用量")).toBeNull();
     expect(screen.getByText("1周额度")).toBeTruthy();
     expect(screen.getByTestId("weekly-value").textContent).toContain("46%");
+    expect(screen.getByTestId("weekly-reset").textContent).toContain("6/23");
+    expect(screen.getByText("刚刚")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "打开 QuotaDock 菜单" }),
+    ).toBeTruthy();
     expect(container.querySelectorAll(".quota-row")).toHaveLength(1);
     expect(container.textContent).not.toContain(["5", "小时"].join(""));
     expect(container.querySelector(".panel-chevron")).toBeNull();

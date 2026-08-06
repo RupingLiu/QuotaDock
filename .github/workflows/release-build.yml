@@ -93,6 +93,10 @@ jobs:
           $bundle = Join-Path $PWD "src-tauri\target\release\bundle\nsis"
           $installer = Join-Path $bundle "QuotaDock_${version}_x64-setup.exe"
           $signature = "$installer.sig"
+          $productVersion = (Get-Item -LiteralPath $installer).VersionInfo.ProductVersion.Trim()
+          if ($productVersion -notmatch ('^' + [regex]::Escape($version) + '(?:\.0)?$')) {
+            throw "Installer ProductVersion $productVersion does not match release version $version."
+          }
           node scripts/build-release-manifest.mjs $version $installer $signature
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:QUOTADOCK_RELEASE_INSTALLER = $installer

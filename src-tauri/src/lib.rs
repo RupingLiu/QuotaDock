@@ -81,7 +81,8 @@ pub fn run() {
             commands::open_official_usage,
             details::open_latest_release,
             updates::get_update_status,
-            updates::check_for_updates
+            updates::check_for_updates,
+            updates::install_downloaded_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
