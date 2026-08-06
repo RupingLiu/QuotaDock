@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppDiagnostics,
   AppState,
   QuotaSnapshot,
   RefreshUsageResult,
   SettingsPatch,
+  UpdateStatus,
 } from "$lib/types/usage";
 
 export type QuotaDockApi = {
@@ -17,6 +19,10 @@ export type QuotaDockApi = {
   setStartupEnabled(enabled: boolean): Promise<boolean>;
   hideDetails(): Promise<void>;
   openOfficialUsage(): Promise<void>;
+  getUpdateStatus(): Promise<UpdateStatus>;
+  checkForUpdates(): Promise<UpdateStatus>;
+  openLatestRelease(): Promise<void>;
+  onUpdateStatus(listener: (status: UpdateStatus) => void): Promise<UnlistenFn>;
 };
 
 export const tauriApi: QuotaDockApi = {
@@ -72,6 +78,20 @@ export const tauriApi: QuotaDockApi = {
     hasTauriRuntime() ? invoke<void>("hide_details") : Promise.resolve(),
   openOfficialUsage: () =>
     hasTauriRuntime() ? invoke<void>("open_official_usage") : Promise.resolve(),
+  getUpdateStatus: () =>
+    hasTauriRuntime()
+      ? invoke<UpdateStatus>("get_update_status")
+      : Promise.resolve(defaultUpdateStatus()),
+  checkForUpdates: () =>
+    hasTauriRuntime()
+      ? invoke<UpdateStatus>("check_for_updates")
+      : Promise.resolve(browserPreviewCheckedUpdateStatus()),
+  openLatestRelease: () =>
+    hasTauriRuntime() ? invoke<void>("open_latest_release") : Promise.resolve(),
+  onUpdateStatus: (listener) =>
+    hasTauriRuntime()
+      ? listen<UpdateStatus>("quotadock:update-status", (event) => listener(event.payload))
+      : Promise.resolve(() => {}),
 };
 
 function hasTauriRuntime(): boolean {
@@ -93,6 +113,45 @@ function defaultAppState(statusMessage: string): AppState {
       lowQuotaNotifications: false,
     },
     recoveryNotice: null,
+  };
+}
+
+function defaultUpdateStatus(): UpdateStatus {
+  if (
+    import.meta.env.DEV &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("fixture") === "update-error"
+  ) {
+    return {
+      currentVersion: "0.5.2",
+      phase: "error",
+      message: "暂时无法连接更新服务，请检查网络或代理后重试。",
+      technicalDetail:
+        "获取签名更新清单失败：error sending request for url (https://github.com/RupingLiu/QuotaDock/releases/latest/download/latest.json)",
+      availableVersion: null,
+      progressPercent: null,
+      checkedAt: `unix:${Math.floor(Date.now() / 1000)}`,
+    };
+  }
+  return {
+    currentVersion: "preview",
+    phase: "idle",
+    message: "尚未检查软件更新。",
+    technicalDetail: null,
+    availableVersion: null,
+    progressPercent: null,
+    checkedAt: null,
+  };
+}
+
+function browserPreviewCheckedUpdateStatus(): UpdateStatus {
+  const status = defaultUpdateStatus();
+  if (status.phase === "error") return status;
+  return {
+    ...status,
+    phase: "up-to-date",
+    message: "浏览器预览模式未连接桌面更新服务。",
+    checkedAt: `unix:${Math.floor(Date.now() / 1000)}`,
   };
 }
 

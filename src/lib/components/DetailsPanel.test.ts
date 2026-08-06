@@ -8,6 +8,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
+
 const appState: AppState = {
   version: 3,
   latestSnapshot: {
@@ -82,6 +86,29 @@ beforeEach(() => {
         },
       });
     }
+    if (command === "get_update_status") {
+      return Promise.resolve({
+        currentVersion: "0.5.2",
+        phase: "idle",
+        message: "尚未检查软件更新。",
+        technicalDetail: null,
+        availableVersion: null,
+        progressPercent: null,
+        checkedAt: null,
+      });
+    }
+    if (command === "check_for_updates") {
+      return Promise.resolve({
+        currentVersion: "0.5.2",
+        phase: "error",
+        message: "暂时无法连接更新服务，请检查网络或代理后重试。",
+        technicalDetail:
+          "获取签名更新清单失败：https://github.com/example/releases/latest/download/latest.json",
+        availableVersion: null,
+        progressPercent: null,
+        checkedAt: "unix:1781769600",
+      });
+    }
     return Promise.resolve();
   });
 });
@@ -127,5 +154,26 @@ describe("DetailsPanel", () => {
     );
 
     expect(invoke).toHaveBeenCalledWith("open_official_usage");
+  });
+
+  it("offers retry, browser download and collapsed technical details after an update failure", async () => {
+    const { container } = render(DetailsPanel, { props: { appState } });
+
+    const checkButton = await screen.findByRole("button", { name: "检查更新" });
+    await fireEvent.click(checkButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/暂时无法连接更新服务/)).toBeTruthy();
+    });
+    expect(screen.getByRole("button", { name: "重新检查" })).toBeTruthy();
+    const downloadButton = screen.getByRole("button", { name: "浏览器下载" });
+    expect(downloadButton).toBeTruthy();
+
+    const technicalDetails = container.querySelector(".update-recovery details");
+    expect(technicalDetails?.hasAttribute("open")).toBe(false);
+    expect(container.querySelector(".update-message")?.textContent).not.toContain("http");
+
+    await fireEvent.click(downloadButton);
+    expect(invoke).toHaveBeenCalledWith("open_latest_release");
   });
 });

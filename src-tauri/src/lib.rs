@@ -30,6 +30,7 @@ pub fn run() {
     #[cfg(feature = "desktop")]
     let builder = builder.setup(|app| {
         commands::install_refresh_coordinator(app);
+        updates::install(app);
         tray::install(app)?;
         if let Ok(state) = commands::load_app_state(app.handle()) {
             tray::sync_from_app_state(app.handle(), &state);
@@ -77,7 +78,10 @@ pub fn run() {
             commands::set_startup_enabled,
             commands::show_details,
             commands::hide_details,
-            commands::open_official_usage
+            commands::open_official_usage,
+            details::open_latest_release,
+            updates::get_update_status,
+            updates::check_for_updates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
