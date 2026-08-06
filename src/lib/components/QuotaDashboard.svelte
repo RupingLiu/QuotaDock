@@ -39,6 +39,10 @@
 
   const DASHBOARD_STALE_AFTER_MS = 10 * 60 * 1000;
   const CLOCK_TICK_MS = 30 * 1000;
+  const NON_ACTIONABLE_WARNING_CODES = new Set([
+    "unknown-lines",
+    "missing-five-hour",
+  ]);
   const emptyReading: QuotaReading = {
     remainingPercent: null,
     resetAt: null,
@@ -93,7 +97,9 @@
     ? isSnapshotStale(snapshot, nowMs, DASHBOARD_STALE_AFTER_MS)
     : false;
   $: importantWarning = Boolean(
-    snapshot?.warnings.some((warning) => warning.code !== "unknown-lines"),
+    snapshot?.warnings.some(
+      (warning) => !NON_ACTIONABLE_WARNING_CODES.has(warning.code),
+    ),
   );
   $: storageWarning =
     appState?.storageStatus === "recovered" ||

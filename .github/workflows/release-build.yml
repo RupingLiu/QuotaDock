@@ -1,0 +1,64 @@
+name: Release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify release inputs
+        shell: pwsh
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          if ($package.version -ne "${{ inputs.version }}") {
+            throw "Requested version ${{ inputs.version }} does not match package version $($package.version)."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is unavailable."
+          }
+      - run: npm ci
+      - run: npm test
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+      - name: Build signed installer
+        run: npm run tauri build
+      - name: Generate and verify release metadata
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $bundle = Join-Path $PWD "src-tauri\target\release\bundle\nsis"
+          $installer = Join-Path $bundle "QuotaDock_${version}_x64-setup.exe"
+          $signature = "$installer.sig"
+          node scripts/build-release-manifest.mjs $version $installer $signature
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:QUOTADOCK_RELEASE_INSTALLER = $installer
+          $env:QUOTADOCK_RELEASE_SIGNATURE = $signature
+          cargo test --manifest-path src-tauri/Cargo.toml --test release_signature -- --ignored --nocapture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quotadock-v${{ inputs.version }}-windows
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            src-tauri/target/release/bundle/nsis/QuotaDock_${{ inputs.version }}_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/QuotaDock_${{ inputs.version }}_x64-setup.exe.sig
+            src-tauri/target/release/bundle/nsis/QuotaDock_${{ inputs.version }}_x64-setup.exe.sha256
+            src-tauri/target/release/bundle/nsis/latest.json

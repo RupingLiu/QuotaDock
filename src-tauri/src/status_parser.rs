@@ -101,9 +101,6 @@ pub fn parse_status_text_with_source(
     }
 
     let mut warnings = Vec::new();
-    if !five_hour.has_usage() {
-        warnings.push(warning("missing-five-hour", "未识别到 5 小时额度。"));
-    }
     if !weekly.has_usage() {
         warnings.push(warning("missing-weekly", "未识别到 1 周额度。"));
     }
@@ -119,8 +116,10 @@ pub fn parse_status_text_with_source(
         .any(|warning| warning.code == "no-quota-fields")
     {
         "没有识别到 5 小时或 1 周额度，请检查 /status 内容。".to_string()
-    } else if warnings.is_empty() {
+    } else if five_hour.has_usage() && warnings.is_empty() {
         "已更新 5 小时与 1 周额度。".to_string()
+    } else if weekly.has_usage() && warnings.is_empty() {
+        "已更新 1 周额度；当前来源未提供 5 小时额度。".to_string()
     } else {
         "已更新可识别的额度，部分字段缺失。".to_string()
     };
@@ -655,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_partial_when_current_status_has_only_weekly_limit() {
+    fn accepts_current_status_with_only_weekly_limit() {
         let result = parse(
             "Weekly limit: [███████████████████░] 93% left\n                              (resets 13:21 on 22 Jul)\nGPT-5.3-Codex-Spark Weekly limit: [████████████████████] 100% left",
         );
@@ -667,11 +666,11 @@ mod tests {
             Some("13:21 on 22 Jul")
         );
         assert!(result.snapshot.has_any_usage());
-        assert!(result
-            .snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-five-hour"));
+        assert!(result.snapshot.warnings.is_empty());
+        assert_eq!(
+            result.snapshot.status_message,
+            "已更新 1 周额度；当前来源未提供 5 小时额度。"
+        );
     }
 
     #[test]
