@@ -1,4 +1,4 @@
-use crate::models::{ParseWarning, QuotaReading, QuotaSnapshot, SnapshotSource};
+use crate::models::{QuotaReading, QuotaSnapshot, SnapshotSource};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INITIALIZE_REQUEST_ID: u64 = 1;
 const RATE_LIMITS_REQUEST_ID: u64 = 2;
+const WEEKLY_WINDOW_MINS: i64 = 7 * 24 * 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,38 +192,17 @@ fn parse_rate_limits_value(result: Value, captured_at: String) -> Result<QuotaSn
         .remove("codex")
         .or(result.rate_limits)
         .ok_or_else(|| "Codex app-server 没有返回 codex 额度桶。".to_string())?;
-    let mut five_hour = QuotaReading::default();
-    let mut weekly = QuotaReading::default();
-    for window in [bucket.primary.as_ref(), bucket.secondary.as_ref()]
+    let weekly_window = [bucket.primary.as_ref(), bucket.secondary.as_ref()]
         .into_iter()
         .flatten()
-    {
-        assign_window(window, &mut five_hour, &mut weekly);
-    }
-
-    let mut warnings = Vec::new();
-    if !weekly.has_usage() {
-        warnings.push(warning(
-            "missing-weekly",
-            "当前账户没有返回长周期额度窗口。",
-        ));
-    }
-    if !five_hour.has_usage() && !weekly.has_usage() {
-        return Err("Codex app-server 没有返回可用的额度百分比。".to_string());
-    }
-    let status_message = if five_hour.has_usage() && warnings.is_empty() {
-        "已通过 Codex app-server 更新全部额度。".to_string()
-    } else if weekly.has_usage() && warnings.is_empty() {
-        "已通过 Codex app-server 更新 1 周额度；当前接口未提供 5 小时额度。".to_string()
-    } else {
-        "已通过 Codex app-server 更新当前账户提供的额度窗口。".to_string()
-    };
+        .find(|window| window.window_duration_mins == WEEKLY_WINDOW_MINS)
+        .ok_or_else(|| "Codex app-server 没有返回可用的周额度窗口。".to_string())?;
+    let weekly = quota_reading(weekly_window);
 
     Ok(QuotaSnapshot {
         id: captured_at.clone(),
         source: SnapshotSource::CodexAppServer,
         captured_at,
-        five_hour,
         weekly,
         plan_type: bucket.plan_type,
         credits_balance: bucket.credits.and_then(|credits| credits.balance),
@@ -230,41 +210,21 @@ fn parse_rate_limits_value(result: Value, captured_at: String) -> Result<QuotaSn
             .rate_limit_reset_credits
             .map(|credits| credits.available_count),
         raw_text: String::new(),
-        status_message,
-        warnings,
+        status_message: "已通过 Codex app-server 更新 1 周额度。".to_string(),
+        warnings: Vec::new(),
     })
 }
 
-fn assign_window(
-    window: &RateLimitWindow,
-    five_hour: &mut QuotaReading,
-    weekly: &mut QuotaReading,
-) {
-    let reading = QuotaReading {
+fn quota_reading(window: &RateLimitWindow) -> QuotaReading {
+    QuotaReading {
         remaining_percent: Some(remaining_percent(window.used_percent)),
         reset_at: Some(format!("unix:{}", window.resets_at)),
         reset_countdown_seconds: None,
-    };
-    let five_hour_distance = (window.window_duration_mins - 5 * 60).abs();
-    let weekly_distance = (window.window_duration_mins - 7 * 24 * 60).abs();
-    if five_hour_distance <= weekly_distance {
-        if five_hour.remaining_percent.is_none() {
-            *five_hour = reading;
-        }
-    } else if weekly.remaining_percent.is_none() {
-        *weekly = reading;
     }
 }
 
 fn remaining_percent(used_percent: f64) -> u8 {
     (100.0 - used_percent).round().clamp(0.0, 100.0) as u8
-}
-
-fn warning(code: &str, message: &str) -> ParseWarning {
-    ParseWarning {
-        code: code.to_string(),
-        message: message.to_string(),
-    }
 }
 
 fn unix_timestamp_string() -> String {
@@ -314,14 +274,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn maps_structured_rate_limits_by_window_duration() {
+    fn selects_the_exact_weekly_window() {
         let snapshot = parse_rate_limits_value(
             json!({
                 "rateLimits": {
                     "limitId": "codex",
                     "primary": {
                         "usedPercent": 25,
-                        "windowDurationMins": 300,
+                        "windowDurationMins": 4_320,
                         "resetsAt": 1_800_000_000
                     },
                     "secondary": {
@@ -340,7 +300,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(snapshot.source, SnapshotSource::CodexAppServer);
-        assert_eq!(snapshot.five_hour.remaining_percent, Some(75));
         assert_eq!(snapshot.weekly.remaining_percent, Some(32));
         assert_eq!(snapshot.weekly.reset_at.as_deref(), Some("unix:1800100000"));
         assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
@@ -349,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_accounts_with_only_a_weekly_window() {
+    fn accepts_accounts_with_one_weekly_window() {
         let snapshot = parse_rate_limits_value(
             json!({
                 "rateLimits": {
@@ -370,13 +329,39 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(snapshot.five_hour.remaining_percent, None);
         assert_eq!(snapshot.weekly.remaining_percent, Some(32));
         assert!(snapshot.warnings.is_empty());
         assert_eq!(
             snapshot.status_message,
-            "已通过 Codex app-server 更新 1 周额度；当前接口未提供 5 小时额度。"
+            "已通过 Codex app-server 更新 1 周额度。"
         );
+    }
+
+    #[test]
+    fn rejects_responses_without_an_exact_weekly_window() {
+        for duration in [4_320, 43_200] {
+            let error = parse_rate_limits_value(
+                json!({
+                    "rateLimits": {
+                        "limitId": "codex",
+                        "primary": {
+                            "usedPercent": 25,
+                            "windowDurationMins": duration,
+                            "resetsAt": 1_800_000_000
+                        },
+                        "secondary": null,
+                        "credits": null,
+                        "planType": "pro"
+                    },
+                    "rateLimitsByLimitId": {},
+                    "rateLimitResetCredits": null
+                }),
+                "unix:1000".to_string(),
+            )
+            .unwrap_err();
+
+            assert_eq!(error, "Codex app-server 没有返回可用的周额度窗口。");
+        }
     }
 
     #[test]

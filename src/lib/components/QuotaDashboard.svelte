@@ -15,17 +15,6 @@
   export let errorMessage: string | null = null;
   export let noticeMessage: string | null = null;
 
-  type QuotaRow = {
-    id: "five" | "week";
-    label: string;
-    ariaLabel: string;
-    valueTestId: string;
-    resetTestId: string;
-    remainingPercent: number | null;
-    resetText: string;
-    resetAriaText: string;
-    isLow: boolean;
-  };
   type TauriWindowHandle = {
     startDragging: () => Promise<void>;
   };
@@ -39,10 +28,7 @@
 
   const DASHBOARD_STALE_AFTER_MS = 10 * 60 * 1000;
   const CLOCK_TICK_MS = 30 * 1000;
-  const NON_ACTIONABLE_WARNING_CODES = new Set([
-    "unknown-lines",
-    "missing-five-hour",
-  ]);
+  const NON_ACTIONABLE_WARNING_CODES = new Set(["unknown-lines"]);
   const emptyReading: QuotaReading = {
     remainingPercent: null,
     resetAt: null,
@@ -55,36 +41,10 @@
   let menuErrorMessage: string | null = null;
 
   $: snapshot = appState?.latestSnapshot ?? null;
-  $: fiveHour = snapshot?.fiveHour ?? emptyReading;
   $: weekly = snapshot?.weekly ?? emptyReading;
-  $: quotaRows = [
-    {
-      id: "five",
-      label: "5 小时",
-      ariaLabel: "5小时额度",
-      valueTestId: "five-hour-value",
-      resetTestId: "five-hour-reset",
-      remainingPercent: fiveHour.remainingPercent,
-      resetText: compactFloatingReset(fiveHour, snapshot?.capturedAt, nowMs),
-      resetAriaText: accessibleReset(fiveHour, snapshot?.capturedAt, nowMs),
-      isLow:
-        typeof fiveHour.remainingPercent === "number" &&
-        fiveHour.remainingPercent <= 20,
-    },
-    {
-      id: "week",
-      label: "1 周",
-      ariaLabel: "1周额度",
-      valueTestId: "weekly-value",
-      resetTestId: "weekly-reset",
-      remainingPercent: weekly.remainingPercent,
-      resetText: compactFloatingReset(weekly, snapshot?.capturedAt, nowMs),
-      resetAriaText: accessibleReset(weekly, snapshot?.capturedAt, nowMs),
-      isLow:
-        typeof weekly.remainingPercent === "number" &&
-        weekly.remainingPercent <= 20,
-    },
-  ] satisfies QuotaRow[];
+  $: weeklyIsLow =
+    typeof weekly.remainingPercent === "number" &&
+    weekly.remainingPercent <= 20;
   $: statusText =
     errorMessage ??
     menuErrorMessage ??
@@ -128,7 +88,7 @@
   ]
     .filter(Boolean)
     .join("，");
-  $: titleText = `5小时 ${formatPercent(fiveHour.remainingPercent)} 刷新 ${formatReset(fiveHour, { capturedAt: snapshot?.capturedAt, nowMs })}；1周 ${formatPercent(weekly.remainingPercent)} 刷新 ${formatReset(weekly, { capturedAt: snapshot?.capturedAt, nowMs })}；${displayStateLabel}${statusText ? `；${statusText}` : ""}`;
+  $: titleText = `1周 ${formatPercent(weekly.remainingPercent)} 刷新 ${formatReset(weekly, { capturedAt: snapshot?.capturedAt, nowMs })}；${displayStateLabel}${statusText ? `；${statusText}` : ""}`;
 
   onMount(() => {
     void preloadTauriWindow();
@@ -324,32 +284,29 @@
     on:mousedown={startWindowDrag}
   >
     <span class="state-dot" aria-hidden="true"></span>
-    {#each quotaRows as row (row.id)}
-      <div
-        class:low={row.isLow}
-        class="quota-row"
-      >
-        <span class="sr-only">{row.ariaLabel}</span>
-        <span class="quota-label" aria-hidden="true">{row.label}</span>
-        <span class="quota-metrics">
-          <strong data-testid={row.valueTestId}>
-            {formatPercent(row.remainingPercent)}
-          </strong>
-          {#if row.isLow}
-            <span class="low-flag" aria-hidden="true">!</span>
-            <span class="sr-only">低额度</span>
-          {/if}
-          <span
-            class="reset-time"
-            data-testid={row.resetTestId}
-            aria-hidden="true"
-          >
-            {row.resetText}
-          </span>
-          <span class="sr-only">{row.resetAriaText}</span>
+    <div class:low={weeklyIsLow} class="quota-row">
+      <span class="sr-only">1周额度</span>
+      <span class="quota-label" aria-hidden="true">1 周</span>
+      <span class="quota-metrics">
+        <strong data-testid="weekly-value">
+          {formatPercent(weekly.remainingPercent)}
+        </strong>
+        {#if weeklyIsLow}
+          <span class="low-flag" aria-hidden="true">!</span>
+          <span class="sr-only">低额度</span>
+        {/if}
+        <span
+          class="reset-time"
+          data-testid="weekly-reset"
+          aria-hidden="true"
+        >
+          {compactFloatingReset(weekly, snapshot?.capturedAt, nowMs)}
         </span>
-      </div>
-    {/each}
+        <span class="sr-only">
+          {accessibleReset(weekly, snapshot?.capturedAt, nowMs)}
+        </span>
+      </span>
+    </div>
     <span class="freshness" aria-hidden="true">{freshnessText}</span>
     <button
       class="menu-button"
@@ -423,7 +380,7 @@
     height: 100%;
     min-width: 0;
     display: grid;
-    grid-template-columns: 8px minmax(0, 1fr) minmax(0, 1fr) auto 24px;
+    grid-template-columns: 8px minmax(0, 1fr) auto 24px;
     align-items: center;
     column-gap: 7px;
     padding: 3px 5px 3px 8px;
@@ -494,11 +451,6 @@
     display: flex;
     align-items: center;
     gap: 5px;
-  }
-
-  .quota-row + .quota-row {
-    border-left: 1px solid rgba(100, 116, 139, 0.24);
-    padding-left: 8px;
   }
 
   .quota-label {
@@ -644,10 +596,6 @@
         inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
 
-    .quota-row + .quota-row {
-      border-left-color: rgba(148, 163, 184, 0.28);
-    }
-
     .quota-label,
     .reset-time,
     .freshness {
@@ -711,7 +659,7 @@
 
   @media (max-width: 319px) {
     .mini-status {
-      grid-template-columns: 8px minmax(0, 1fr) minmax(0, 1fr) auto 24px;
+      grid-template-columns: 8px minmax(0, 1fr) auto 24px;
       column-gap: 4px;
     }
 

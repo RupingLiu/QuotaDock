@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const STATE_VERSION: u32 = 3;
+pub const STATE_VERSION: u32 = 4;
 pub const DEFAULT_STATUS_MESSAGE: &str = "尚未获取额度。可通过托盘刷新，后台也会自动查询。";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +38,6 @@ pub struct QuotaSnapshot {
     pub id: String,
     pub source: SnapshotSource,
     pub captured_at: String,
-    pub five_hour: QuotaReading,
     pub weekly: QuotaReading,
     #[serde(default)]
     pub plan_type: Option<String>,
@@ -52,8 +51,8 @@ pub struct QuotaSnapshot {
 }
 
 impl QuotaSnapshot {
-    pub fn has_any_usage(&self) -> bool {
-        self.five_hour.has_usage() || self.weekly.has_usage()
+    pub fn has_usage(&self) -> bool {
+        self.weekly.has_usage()
     }
 }
 
@@ -70,7 +69,6 @@ pub enum StorageStatus {
 #[serde(rename_all = "camelCase")]
 pub struct UsageHistoryPoint {
     pub captured_at: String,
-    pub five_hour_remaining_percent: Option<u8>,
     pub weekly_remaining_percent: Option<u8>,
 }
 
@@ -78,7 +76,6 @@ impl From<&QuotaSnapshot> for UsageHistoryPoint {
     fn from(snapshot: &QuotaSnapshot) -> Self {
         Self {
             captured_at: snapshot.captured_at.clone(),
-            five_hour_remaining_percent: snapshot.five_hour.remaining_percent,
             weekly_remaining_percent: snapshot.weekly.remaining_percent,
         }
     }

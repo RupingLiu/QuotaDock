@@ -33,8 +33,7 @@
 
   $: snapshot = appState?.latestSnapshot ?? null;
   $: history = appState?.history ?? [];
-  $: fiveHourPath = sparklinePath(history, "fiveHourRemainingPercent");
-  $: weeklyPath = sparklinePath(history, "weeklyRemainingPercent");
+  $: weeklyPath = sparklinePath(history);
   $: statusText =
     actionError ??
     errorMessage ??
@@ -154,13 +153,10 @@
     }
   }
 
-  function sparklinePath(
-    points: UsageHistoryPoint[],
-    field: "fiveHourRemainingPercent" | "weeklyRemainingPercent",
-  ): string {
+  function sparklinePath(points: UsageHistoryPoint[]): string {
     const values = points
       .slice(-48)
-      .map((point) => point[field])
+      .map((point) => point.weeklyRemainingPercent)
       .filter((value): value is number => typeof value === "number");
     if (values.length === 0) return "";
     if (values.length === 1) return `M 0 ${100 - values[0]} L 240 ${100 - values[0]}`;
@@ -268,17 +264,6 @@
   {/if}
 
   <section class="quota-grid" aria-label="额度概览">
-    <article class:low={(snapshot?.fiveHour.remainingPercent ?? 101) <= 20} class="quota-card">
-      <div class="quota-heading">
-        <span>5 小时额度</span>
-        <strong>{formatPercent(snapshot?.fiveHour.remainingPercent ?? null)}</strong>
-      </div>
-      <div class="progress-track" aria-hidden="true">
-        <span style={`width: ${progressValue(snapshot?.fiveHour.remainingPercent ?? null)}%`}></span>
-      </div>
-      <p>重置：{snapshot ? formatReset(snapshot.fiveHour, { capturedAt: snapshot.capturedAt }) : "--"}</p>
-    </article>
-
     <article class:low={(snapshot?.weekly.remainingPercent ?? 101) <= 20} class="quota-card">
       <div class="quota-heading">
         <span>1 周额度</span>
@@ -369,22 +354,16 @@
     <div class="section-heading">
       <div>
         <p class="section-kicker">HISTORY</p>
-        <h2>近期趋势</h2>
+        <h2>1 周额度趋势</h2>
       </div>
       <span>{history.length} 个采样点</span>
     </div>
-    {#if fiveHourPath || weeklyPath}
+    {#if weeklyPath}
       <div class="chart">
-        <svg viewBox="0 0 240 100" preserveAspectRatio="none" role="img" aria-label="近期剩余额度趋势">
+        <svg viewBox="0 0 240 100" preserveAspectRatio="none" role="img" aria-label="1 周剩余额度趋势">
           <path class="grid" d="M0 25H240M0 50H240M0 75H240"></path>
-          {#if weeklyPath}<path class="series weekly" d={weeklyPath}></path>{/if}
-          {#if fiveHourPath}<path class="series five" d={fiveHourPath}></path>{/if}
+          <path class="series" d={weeklyPath}></path>
         </svg>
-      </div>
-      <div class="legend">
-        <span><i class="five"></i>5 小时</span>
-        <span><i class="weekly"></i>1 周</span>
-        <small>最多保留 7 天采样</small>
       </div>
     {:else}
       <p class="empty-state">刷新几次后，这里会显示剩余额度变化。</p>
@@ -527,8 +506,7 @@
   .quota-heading,
   .setting-row,
   .meta-row,
-  .account-row,
-  .legend {
+  .account-row {
     display: flex;
     align-items: center;
   }
@@ -689,7 +667,7 @@
 
   .quota-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 10px;
     margin-bottom: 10px;
   }
@@ -838,50 +816,10 @@
   }
 
   .series {
+    stroke: #0f766e;
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 2;
-  }
-
-  .series.five {
-    stroke: #0f766e;
-  }
-
-  .series.weekly {
-    stroke: #4f46e5;
-  }
-
-  .legend {
-    gap: 12px;
-    margin-top: 7px;
-    color: #475569;
-    font-size: 0.67rem;
-  }
-
-  .legend span {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .legend i {
-    width: 12px;
-    height: 2px;
-    display: inline-block;
-    border-radius: 2px;
-  }
-
-  .legend i.five {
-    background: #0f766e;
-  }
-
-  .legend i.weekly {
-    background: #4f46e5;
-  }
-
-  .legend small {
-    margin-left: auto;
-    color: #94a3b8;
   }
 
   .empty-state {

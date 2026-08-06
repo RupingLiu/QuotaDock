@@ -14,9 +14,6 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,11 +23,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify release inputs
         shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
-          if ($package.version -ne "${{ inputs.version }}") {
-            throw "Requested version ${{ inputs.version }} does not match package version $($package.version)."
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          $requestedVersion = $env:REQUESTED_VERSION
+          if ($requestedVersion -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "Release version must use the numeric x.y.z format."
           }
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          $packageLock = Get-Content -LiteralPath package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          $tauriConfig = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $cargoToml = Get-Content -LiteralPath src-tauri/Cargo.toml -Raw
+          $cargoLock = Get-Content -LiteralPath src-tauri/Cargo.lock -Raw
+
+          $cargoPackageBlock = [regex]::Match(
+            $cargoToml,
+            '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)'
+          )
+          $cargoPackageVersion = [regex]::Match(
+            $cargoPackageBlock.Groups[1].Value,
+            '(?m)^version\s*=\s*"([^"]+)"'
+          )
+          $cargoLockVersion = [regex]::Match(
+            $cargoLock,
+            '(?ms)^\[\[package\]\]\s*\r?\nname\s*=\s*"quotadock"\s*\r?\nversion\s*=\s*"([^"]+)"'
+          )
+          if (-not $cargoPackageBlock.Success -or -not $cargoPackageVersion.Success) {
+            throw "Unable to read the quotadock version from src-tauri/Cargo.toml."
+          }
+          if (-not $cargoLockVersion.Success) {
+            throw "Unable to read the quotadock package version from src-tauri/Cargo.lock."
+          }
+
+          $versions = [ordered]@{
+            "package.json" = $package.version
+            "package-lock.json" = $packageLock['version']
+            "package-lock.json root package" = $packageLock['packages']['']['version']
+            "src-tauri/Cargo.toml" = $cargoPackageVersion.Groups[1].Value
+            "src-tauri/Cargo.lock quotadock package" = $cargoLockVersion.Groups[1].Value
+            "src-tauri/tauri.conf.json" = $tauriConfig.version
+          }
+          foreach ($entry in $versions.GetEnumerator()) {
+            if ($entry.Value -ne $requestedVersion) {
+              throw "Requested version $requestedVersion does not match $($entry.Key) version $($entry.Value)."
+            }
+          }
+
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "TAURI_SIGNING_PRIVATE_KEY is unavailable."
           }
@@ -40,10 +81,15 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
       - name: Build signed installer
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
       - name: Generate and verify release metadata
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          $version = "${{ inputs.version }}"
+          $version = $env:RELEASE_VERSION
           $bundle = Join-Path $PWD "src-tauri\target\release\bundle\nsis"
           $installer = Join-Path $bundle "QuotaDock_${version}_x64-setup.exe"
           $signature = "$installer.sig"

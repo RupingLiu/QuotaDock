@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PREVIOUS_STATE_VERSION: u32 = 2;
+const PREVIOUS_STATE_VERSIONS: [u32; 2] = [2, 3];
 const MAX_HISTORY_POINTS: usize = 672;
 const HISTORY_SAMPLE_INTERVAL_SECONDS: i64 = 15 * 60;
 const MAX_BACKUP_FILES: usize = 3;
@@ -60,8 +60,8 @@ impl UsageStore {
             }
         };
 
-        if state.version == PREVIOUS_STATE_VERSION {
-            state.version = STATE_VERSION;
+        if PREVIOUS_STATE_VERSIONS.contains(&state.version) {
+            migrate_previous_state(&mut state);
             self.save_state(&state)?;
         } else if state.version != STATE_VERSION {
             let backup_path = self.backup_existing_file("unsupported")?;
@@ -200,6 +200,24 @@ impl UsageStore {
     }
 }
 
+fn migrate_previous_state(state: &mut StoredState) {
+    state.version = STATE_VERSION;
+    state
+        .history
+        .retain(|point| point.weekly_remaining_percent.is_some());
+    if state
+        .latest_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| !snapshot.has_usage())
+    {
+        state.latest_snapshot = None;
+    } else if let Some(snapshot) = state.latest_snapshot.as_mut() {
+        snapshot.raw_text.clear();
+        snapshot.warnings.clear();
+        snapshot.status_message = "已更新 1 周额度。".to_string();
+    }
+}
+
 impl LoadOutcome {
     pub fn into_app_state(self) -> AppState {
         AppState::from_stored(
@@ -301,7 +319,7 @@ fn apply_settings_patch(settings: &mut AppSettings, patch: SettingsPatch) {
 }
 
 fn append_history(history: &mut Vec<UsageHistoryPoint>, snapshot: &QuotaSnapshot) {
-    if !snapshot.has_any_usage() {
+    if !snapshot.has_usage() {
         return;
     }
     let next = UsageHistoryPoint::from(snapshot);
@@ -318,9 +336,7 @@ fn append_history(history: &mut Vec<UsageHistoryPoint>, snapshot: &QuotaSnapshot
 }
 
 fn should_record_history(previous: &UsageHistoryPoint, next: &UsageHistoryPoint) -> bool {
-    if previous.five_hour_remaining_percent != next.five_hour_remaining_percent
-        || previous.weekly_remaining_percent != next.weekly_remaining_percent
-    {
+    if previous.weekly_remaining_percent != next.weekly_remaining_percent {
         return true;
     }
     match (
@@ -388,13 +404,8 @@ mod tests {
             id: "snap-1".to_string(),
             source: SnapshotSource::PastedStatus,
             captured_at: "unix:1000".to_string(),
-            five_hour: QuotaReading {
-                remaining_percent: Some(percent),
-                reset_at: None,
-                reset_countdown_seconds: Some(3600),
-            },
             weekly: QuotaReading {
-                remaining_percent: Some(46),
+                remaining_percent: Some(percent),
                 reset_at: Some("2026-06-23T09:00:00Z".to_string()),
                 reset_countdown_seconds: None,
             },
@@ -402,7 +413,7 @@ mod tests {
             credits_balance: None,
             reset_credits_available: None,
             raw_text: "status".to_string(),
-            status_message: "已更新 5 小时与 1 周额度。".to_string(),
+            status_message: "已更新 1 周额度。".to_string(),
             warnings: Vec::new(),
         }
     }
@@ -435,52 +446,83 @@ mod tests {
                 .state
                 .latest_snapshot
                 .unwrap()
-                .five_hour
+                .weekly
                 .remaining_percent,
             Some(72)
         );
     }
 
     #[test]
-    fn v2_file_is_migrated_without_losing_snapshot_or_settings() {
-        let dir = TestDir::new("migrate-v2");
+    fn previous_state_versions_are_migrated_without_losing_weekly_usage() {
+        for version in [2, 3] {
+            let dir = TestDir::new(&format!("migrate-v{version}"));
+            let path = dir.path().join("state.json");
+            let json = format!(
+                r#"{{
+                  "version": {version},
+                  "latestSnapshot": {{
+                    "id": "legacy",
+                    "source": "codex-cli",
+                    "capturedAt": "unix:1000",
+                    "removedWindow": {{"remainingPercent": 71}},
+                    "weekly": {{"remainingPercent": 45, "resetAt": null, "resetCountdownSeconds": null}},
+                    "rawText": "legacy terminal output",
+                    "statusMessage": "legacy status",
+                    "warnings": [{{"code": "removed-capability", "message": "legacy warning"}}]
+                  }}
+                }}"#
+            );
+            std::fs::write(&path, json).unwrap();
+            let store = UsageStore::new(path.clone());
+
+            let outcome = store.load().unwrap();
+
+            assert_eq!(outcome.status, StorageStatus::Ready);
+            assert_eq!(outcome.state.version, STATE_VERSION);
+            let migrated_snapshot = outcome.state.latest_snapshot.as_ref().unwrap();
+            assert_eq!(migrated_snapshot.weekly.remaining_percent, Some(45));
+            assert_eq!(migrated_snapshot.status_message, "已更新 1 周额度。");
+            assert!(migrated_snapshot.raw_text.is_empty());
+            assert!(migrated_snapshot.warnings.is_empty());
+            let persisted_text = std::fs::read_to_string(path).unwrap();
+            assert!(!persisted_text.contains("removedWindow"));
+            assert!(!persisted_text.contains("legacy terminal output"));
+            assert!(!persisted_text.contains("legacy warning"));
+            let persisted: StoredState = serde_json::from_str(&persisted_text).unwrap();
+            assert_eq!(persisted.version, STATE_VERSION);
+        }
+    }
+
+    #[test]
+    fn migration_drops_snapshots_and_history_without_weekly_usage() {
+        let dir = TestDir::new("migrate-empty-weekly");
         let path = dir.path().join("state.json");
         std::fs::write(
             &path,
             r#"{
-              "version": 2,
+              "version": 3,
               "latestSnapshot": {
-                "id": "legacy",
+                "id": "legacy-empty",
                 "source": "codex-cli",
                 "capturedAt": "unix:1000",
-                "fiveHour": {"remainingPercent": 71, "resetAt": null, "resetCountdownSeconds": null},
-                "weekly": {"remainingPercent": 45, "resetAt": null, "resetCountdownSeconds": null},
-                "rawText": "",
-                "statusMessage": "legacy",
-                "warnings": []
-              }
+                "weekly": {"remainingPercent": null, "resetAt": null, "resetCountdownSeconds": null},
+                "rawText": "legacy terminal output",
+                "statusMessage": "legacy status",
+                "warnings": [{"code": "removed-capability", "message": "legacy warning"}]
+              },
+              "history": [
+                {"capturedAt": "unix:1000", "weeklyRemainingPercent": null}
+              ]
             }"#,
         )
         .unwrap();
-        let store = UsageStore::new(path.clone());
+        let store = UsageStore::new(path);
 
         let outcome = store.load().unwrap();
 
-        assert_eq!(outcome.status, StorageStatus::Ready);
         assert_eq!(outcome.state.version, STATE_VERSION);
-        assert_eq!(
-            outcome
-                .state
-                .latest_snapshot
-                .as_ref()
-                .unwrap()
-                .five_hour
-                .remaining_percent,
-            Some(71)
-        );
-        let persisted: StoredState =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(persisted.version, STATE_VERSION);
+        assert!(outcome.state.latest_snapshot.is_none());
+        assert!(outcome.state.history.is_empty());
     }
 
     #[test]
@@ -593,9 +635,6 @@ mod tests {
         let outcome = store.save_snapshot(periodic).unwrap();
 
         assert_eq!(outcome.state.history.len(), 3);
-        assert_eq!(
-            outcome.state.history[1].five_hour_remaining_percent,
-            Some(71)
-        );
+        assert_eq!(outcome.state.history[1].weekly_remaining_percent, Some(71));
     }
 }

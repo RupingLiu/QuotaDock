@@ -12,12 +12,6 @@ pub struct ParseClock {
     captured_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuotaKind {
-    FiveHour,
-    Weekly,
-}
-
 impl ParseClock {
     pub fn now() -> Self {
         Self {
@@ -43,9 +37,8 @@ pub fn parse_status_text_with_source(
     clock: ParseClock,
     source: SnapshotSource,
 ) -> ParseResult {
-    let mut five_hour = QuotaReading::default();
     let mut weekly = QuotaReading::default();
-    let mut active_window: Option<QuotaKind> = None;
+    let mut weekly_active = false;
     let mut unknown_lines = Vec::new();
 
     for line in raw_text.lines() {
@@ -58,40 +51,32 @@ pub fn parse_status_text_with_source(
             break;
         }
 
-        let labels = detect_windows(trimmed);
-        if labels.len() == 1 {
-            active_window = labels.first().copied();
+        let weekly_label = is_weekly_quota_label(trimmed);
+        if weekly_label {
+            weekly_active = true;
+        } else if is_quota_section_label(trimmed) {
+            weekly_active = false;
+            continue;
         }
 
-        let targets = if !labels.is_empty() {
-            labels
-        } else if line_has_quota_value(trimmed) {
-            active_window.into_iter().collect()
-        } else {
-            Vec::new()
-        };
+        if !weekly_active {
+            continue;
+        }
 
-        let mut matched = !targets.is_empty();
-        for target in targets {
-            let reading = match target {
-                QuotaKind::FiveHour => &mut five_hour,
-                QuotaKind::Weekly => &mut weekly,
-            };
-
-            if reading.remaining_percent.is_none() {
-                if let Some(percent) = extract_percent(trimmed) {
-                    reading.remaining_percent = Some(percent);
-                    matched = true;
-                }
+        let mut matched = weekly_label;
+        if weekly.remaining_percent.is_none() {
+            if let Some(percent) = extract_percent(trimmed) {
+                weekly.remaining_percent = Some(percent);
+                matched = true;
             }
-            if reading.reset_at.is_none() && reading.reset_countdown_seconds.is_none() {
-                if let Some(reset_at) = extract_reset_at(trimmed) {
-                    reading.reset_at = Some(reset_at);
-                    matched = true;
-                } else if let Some(seconds) = extract_countdown(trimmed) {
-                    reading.reset_countdown_seconds = Some(seconds);
-                    matched = true;
-                }
+        }
+        if weekly.reset_at.is_none() && weekly.reset_countdown_seconds.is_none() {
+            if let Some(reset_at) = extract_reset_at(trimmed) {
+                weekly.reset_at = Some(reset_at);
+                matched = true;
+            } else if let Some(seconds) = extract_countdown(trimmed) {
+                weekly.reset_countdown_seconds = Some(seconds);
+                matched = true;
             }
         }
 
@@ -101,13 +86,10 @@ pub fn parse_status_text_with_source(
     }
 
     let mut warnings = Vec::new();
-    if !weekly.has_usage() {
-        warnings.push(warning("missing-weekly", "未识别到 1 周额度。"));
-    }
-    if !unknown_lines.is_empty() && (five_hour.has_usage() || weekly.has_usage()) {
+    if !unknown_lines.is_empty() && weekly.has_usage() {
         warnings.push(warning("unknown-lines", "部分粘贴内容未被识别，已忽略。"));
     }
-    if !five_hour.has_usage() && !weekly.has_usage() {
+    if !weekly.has_usage() {
         warnings.push(warning("no-quota-fields", "没有找到可用的额度信息。"));
     }
 
@@ -115,13 +97,11 @@ pub fn parse_status_text_with_source(
         .iter()
         .any(|warning| warning.code == "no-quota-fields")
     {
-        "没有识别到 5 小时或 1 周额度，请检查 /status 内容。".to_string()
-    } else if five_hour.has_usage() && warnings.is_empty() {
-        "已更新 5 小时与 1 周额度。".to_string()
+        "没有识别到 1 周额度，请检查 /status 内容。".to_string()
     } else if weekly.has_usage() && warnings.is_empty() {
-        "已更新 1 周额度；当前来源未提供 5 小时额度。".to_string()
+        "已更新 1 周额度。".to_string()
     } else {
-        "已更新可识别的额度，部分字段缺失。".to_string()
+        "已更新 1 周额度，部分内容未识别。".to_string()
     };
 
     ParseResult {
@@ -129,7 +109,6 @@ pub fn parse_status_text_with_source(
             id: clock.captured_at.clone(),
             source,
             captured_at: clock.captured_at,
-            five_hour,
             weekly,
             plan_type: None,
             credits_balance: None,
@@ -189,19 +168,9 @@ fn clean_terminal_line(line: &str) -> String {
     output
 }
 
-fn detect_windows(line: &str) -> Vec<QuotaKind> {
+fn is_weekly_quota_label(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
-    let mut windows = Vec::new();
-
-    if contains_any(
-        &lower,
-        &[
-            "5h", "5 h", "5-hour", "5 hour", "5-hour", "5 hours", "5小时", "5 小时",
-        ],
-    ) {
-        windows.push(QuotaKind::FiveHour);
-    }
-    if contains_any(
+    contains_any(
         &lower,
         &[
             "weekly",
@@ -216,15 +185,12 @@ fn detect_windows(line: &str) -> Vec<QuotaKind> {
             "一周",
             "周额度",
         ],
-    ) {
-        windows.push(QuotaKind::Weekly);
-    }
-
-    windows
+    )
 }
 
-fn line_has_quota_value(line: &str) -> bool {
-    line.contains('%') || contains_reset_keyword(line)
+fn is_quota_section_label(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    contains_any(&lower, &["limit", "quota", "额度"])
 }
 
 fn extract_percent(line: &str) -> Option<u8> {
@@ -547,34 +513,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_complete_dual_window_status() {
-        let result = parse(
-            "Codex status\n5h limit\nRemaining: 72%\nResets in: 2h 15m\nWeekly limit\nRemaining: 46%\nReset at: 2026-06-23T09:00:00Z",
-        );
+    fn parses_weekly_status_with_countdown() {
+        let result = parse("Codex status\nWeekly limit\nRemaining: 46%\nResets in: 2h 15m");
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(72));
-        assert_eq!(
-            result.snapshot.five_hour.reset_countdown_seconds,
-            Some(8_100)
-        );
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(46));
-        assert_eq!(
-            result.snapshot.weekly.reset_at.as_deref(),
-            Some("2026-06-23T09:00:00Z")
-        );
+        assert_eq!(result.snapshot.weekly.reset_countdown_seconds, Some(8_100));
         assert!(result.snapshot.warnings.is_empty());
     }
 
     #[test]
     fn parses_chinese_inline_status() {
-        let result =
-            parse("5小时额度：剩余 88%，刷新 1小时30分钟后\n1周额度：剩余 62%，更新：周一 09:00");
+        let result = parse("1周额度：剩余 62%，更新：周一 09:00");
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(88));
-        assert_eq!(
-            result.snapshot.five_hour.reset_countdown_seconds,
-            Some(5_400)
-        );
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(62));
         assert_eq!(
             result.snapshot.weekly.reset_at.as_deref(),
@@ -584,20 +534,17 @@ mod tests {
 
     #[test]
     fn picks_remaining_percent_when_used_is_also_present() {
-        let result = parse("5h usage: 28% used, 72% remaining\n1w usage: remaining 46%");
+        let result = parse("1w usage: 54% used, 46% remaining");
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(72));
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(46));
     }
 
     #[test]
     fn keeps_current_model_limits_before_spark_limits() {
         let result = parse(
-            "5h limit: [======] 44% left (resets 22:04)\nWeekly limit: [======] 59% left (resets 07:00 on 25 Jun)\nGPT-5.3-Codex-Spark limit:\n5h limit: [======] 100% left (resets 02:51 on 19 Jun)\nWeekly limit: [======] 100% left (resets 21:51 on 25 Jun)",
+            "Weekly limit: [======] 59% left (resets 07:00 on 25 Jun)\nGPT-5.3-Codex-Spark limit:\nWeekly limit: [======] 100% left (resets 21:51 on 25 Jun)",
         );
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(44));
-        assert_eq!(result.snapshot.five_hour.reset_at.as_deref(), Some("22:04"));
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(59));
         assert_eq!(
             result.snapshot.weekly.reset_at.as_deref(),
@@ -618,11 +565,9 @@ mod tests {
     #[test]
     fn parses_wrapped_weekly_reset_from_current_status_panel() {
         let result = parse(
-            "5h limit:                    [█████████████░░░░░░░] 64% left (resets 14:40)\nWeekly limit:                [████░░░░░░░░░░░░░░░░] 22% left\n                              (resets 10:22 on 28 Jun)\nGPT-5.3-Codex-Spark limit:\n5h limit:                    [████████████████████] 100% left\n                              (resets 19:40)\nWeekly limit:                [████████████████████] 100% left\n                              (resets 14:40 on 2 Jul)",
+            "Weekly limit:                [████░░░░░░░░░░░░░░░░] 22% left\n                              (resets 10:22 on 28 Jun)\nGPT-5.3-Codex-Spark limit:\nWeekly limit:                [████████████████████] 100% left\n                              (resets 14:40 on 2 Jul)",
         );
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(64));
-        assert_eq!(result.snapshot.five_hour.reset_at.as_deref(), Some("14:40"));
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(22));
         assert_eq!(
             result.snapshot.weekly.reset_at.as_deref(),
@@ -632,52 +577,42 @@ mod tests {
 
     #[test]
     fn parses_terminal_output_with_ansi_sequences() {
-        let result = parse(
-            "\u{1b}[36m5h limit:\u{1b}[0m [====] 44% left (resets 22:04)\n\u{1b}[35mWeekly limit:\u{1b}[0m [====] 59% left (resets 07:00 on 25 Jun)",
-        );
+        let result =
+            parse("\u{1b}[35mWeekly limit:\u{1b}[0m [====] 59% left (resets 07:00 on 25 Jun)");
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(44));
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(59));
     }
 
     #[test]
-    fn reports_partial_when_one_window_is_missing() {
-        let result = parse("5h remaining: 31%\n5h reset in 10m");
+    fn a_new_non_weekly_quota_section_clears_the_active_section() {
+        let result = parse("Weekly limit: 59% left\nDaily quota:\nResets in 10m");
 
-        assert_eq!(result.snapshot.five_hour.remaining_percent, Some(31));
-        assert!(result.snapshot.weekly.remaining_percent.is_none());
-        assert!(result
-            .snapshot
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "missing-weekly"));
+        assert_eq!(result.snapshot.weekly.remaining_percent, Some(59));
+        assert!(result.snapshot.weekly.reset_at.is_none());
+        assert!(result.snapshot.weekly.reset_countdown_seconds.is_none());
     }
 
     #[test]
-    fn accepts_current_status_with_only_weekly_limit() {
+    fn accepts_current_weekly_status() {
         let result = parse(
             "Weekly limit: [███████████████████░] 93% left\n                              (resets 13:21 on 22 Jul)\nGPT-5.3-Codex-Spark Weekly limit: [████████████████████] 100% left",
         );
 
-        assert!(result.snapshot.five_hour.remaining_percent.is_none());
         assert_eq!(result.snapshot.weekly.remaining_percent, Some(93));
         assert_eq!(
             result.snapshot.weekly.reset_at.as_deref(),
             Some("13:21 on 22 Jul")
         );
-        assert!(result.snapshot.has_any_usage());
+        assert!(result.snapshot.has_usage());
         assert!(result.snapshot.warnings.is_empty());
-        assert_eq!(
-            result.snapshot.status_message,
-            "已更新 1 周额度；当前来源未提供 5 小时额度。"
-        );
+        assert_eq!(result.snapshot.status_message, "已更新 1 周额度。");
     }
 
     #[test]
     fn reports_unknown_format() {
         let result = parse("all systems nominal");
 
-        assert!(!result.snapshot.has_any_usage());
+        assert!(!result.snapshot.has_usage());
         assert!(result
             .snapshot
             .warnings

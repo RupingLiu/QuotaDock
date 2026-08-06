@@ -17,7 +17,6 @@ export type QuotaSnapshot = {
   id: string;
   source: SnapshotSource;
   capturedAt: string;
-  fiveHour: QuotaReading;
   weekly: QuotaReading;
   planType: string | null;
   creditsBalance: string | null;
@@ -33,7 +32,6 @@ export type ParseResult = {
 
 export type UsageHistoryPoint = {
   capturedAt: string;
-  fiveHourRemainingPercent: number | null;
   weeklyRemainingPercent: number | null;
 };
 
