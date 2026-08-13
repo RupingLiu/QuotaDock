@@ -81,7 +81,6 @@ export const tauriApi: QuotaDockApi = {
     return hasTauriRuntime()
       ? invoke<ProviderCredentialStatus>("set_provider_credential", {
           provider: args.provider,
-          region: args.region,
           secret,
         })
       : Promise.resolve(previewCredentialStatus(args, "configured"));
@@ -91,7 +90,6 @@ export const tauriApi: QuotaDockApi = {
     return hasTauriRuntime()
       ? invoke<ProviderCredentialStatus>("delete_provider_credential", {
           provider: args.provider,
-          region: args.region,
         })
       : Promise.resolve(previewCredentialStatus(args, "not-configured"));
   },
@@ -101,12 +99,10 @@ export const tauriApi: QuotaDockApi = {
       : Promise.resolve([
           {
             providerId: "deepseek",
-            region: null,
             availability: "not-configured",
           },
           {
             providerId: "kimi",
-            region: "china",
             availability: "not-configured",
           },
         ]),
@@ -171,7 +167,7 @@ function hasTauriRuntime(): boolean {
 function defaultAppState(statusMessage: string): AppState {
   const previewSnapshot = browserPreviewSnapshot();
   const state: AppState = {
-    version: 5,
+    version: 6,
     revision: 0,
     providers: {
       codex: {
@@ -236,11 +232,29 @@ function applyBrowserProviderFixture(state: AppState): AppState {
       data: {
         id: `preview-kimi-${fixture}`,
         capturedAt,
-        region: "china",
-        currency: "CNY",
-        availableBalance: fixture === "providers-zero" ? "0" : "49.59",
-        cashBalance: fixture === "providers-zero" ? "-1.25" : "40.00",
-        voucherBalance: fixture === "providers-zero" ? "0" : "9.59",
+        total: {
+          name: "总使用量",
+          window: null,
+          used: fixture === "providers-zero" ? "0" : "52",
+          limit: "100",
+          resetAt: "2030-08-26T00:00:00Z",
+        },
+        limits: [
+          {
+            name: "Code",
+            window: { duration: 5, unit: "hour" },
+            used: "0",
+            limit: "100",
+            resetAt: "2030-08-14T07:19:00Z",
+          },
+          {
+            name: "Code",
+            window: { duration: 7, unit: "day" },
+            used: fixture === "providers-zero" ? "0" : "1",
+            limit: "64",
+            resetAt: "2030-08-17T09:19:00Z",
+          },
+        ],
       },
     },
     lastAttemptAt: capturedAt,
@@ -311,27 +325,18 @@ function browserPreviewRefreshResult(
   };
 }
 
-type CredentialCommandArguments =
-  | { provider: "deepseek"; region: null }
-  | { provider: "kimi"; region: "china" };
+type CredentialCommandArguments = { provider: "deepseek" | "kimi" };
 
 function credentialArguments(target: CredentialTarget): CredentialCommandArguments {
-  if (target.provider === "deepseek" && !("region" in target)) {
-    return { provider: "deepseek", region: null };
-  }
-  if (target.provider === "kimi" && target.region === "china") {
-    return { provider: "kimi", region: "china" };
-  }
-  throw new Error("首版只支持 DeepSeek 和 Kimi 国内站凭据。");
+  if (target.provider === "deepseek" || target.provider === "kimi") return target;
+  throw new Error("只支持 DeepSeek 与 Kimi Code 凭据。");
 }
 
 function previewCredentialStatus(
   args: CredentialCommandArguments,
   availability: ProviderCredentialStatus["availability"],
 ): ProviderCredentialStatus {
-  return args.provider === "deepseek"
-    ? { providerId: "deepseek", region: null, availability }
-    : { providerId: "kimi", region: "china", availability };
+  return { providerId: args.provider, availability };
 }
 
 function unconfiguredProviderState(): ProviderState {
@@ -382,7 +387,7 @@ function defaultUpdateStatus(): UpdateStatus {
       : null;
   if (fixture === "update-error") {
     return {
-      currentVersion: "0.6.0",
+      currentVersion: "0.6.1",
       phase: "error",
       message: "暂时无法连接更新服务，请检查网络或代理后重试。",
       technicalDetail:

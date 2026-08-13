@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   capturedAtToEpochMs,
   formatCapturedAt,
+  formatCompactPercent,
+  formatKimiWindow,
   formatPercent,
   formatReset,
+  kimiRemainingPercent,
   liveCountdownSeconds,
   progressValue,
 } from "$lib/utils/format";
@@ -12,6 +15,19 @@ describe("format utilities", () => {
   it("formats unknown and known percentages", () => {
     expect(formatPercent(null)).toBe("--");
     expect(formatPercent(72)).toBe("72%");
+  });
+
+  it("computes Kimi remaining percentages with BigInt precision", () => {
+    const remaining = kimiRemainingPercent({
+      name: "Code",
+      window: { duration: 7, unit: "day" },
+      used: "157000000000000000000000000000",
+      limit: "10000000000000000000000000000000",
+      resetAt: null,
+    });
+    expect(formatCompactPercent(remaining)).toBe("98.43%");
+    expect(formatKimiWindow({ duration: 300, unit: "minute" }, true)).toBe("300m");
+    expect(formatKimiWindow({ duration: 5, unit: "hour" })).toBe("5 小时");
   });
 
   it("clamps progress values", () => {

@@ -12,7 +12,7 @@ function primaryAmount(snapshot: ProviderSnapshot): string | number | null {
     case "deepseek":
       return snapshot.data.balances[0]?.toppedUpBalance ?? null;
     case "kimi":
-      return snapshot.data.availableBalance;
+      return snapshot.data.total?.limit ?? null;
   }
 }
 
@@ -40,16 +40,19 @@ describe("multi-provider DTOs", () => {
         data: {
           id: "kimi-1",
           capturedAt: "unix:2",
-          region: "china",
-          currency: "CNY",
-          availableBalance: "49.5900",
-          cashBalance: "-0.4100",
-          voucherBalance: "50.0000",
+          total: {
+            name: "总使用量",
+            window: null,
+            used: "50410000000000000000",
+            limit: "100000000000000000000",
+            resetAt: "2030-08-26T00:00:00Z",
+          },
+          limits: [],
         },
       },
     ];
 
-    expect(snapshots.map(primaryAmount)).toEqual(["100.0000", "49.5900"]);
+    expect(snapshots.map(primaryAmount)).toEqual(["100.0000", "100000000000000000000"]);
   });
 
   it("represents partial refresh results per provider", () => {

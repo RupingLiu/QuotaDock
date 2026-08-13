@@ -6,8 +6,8 @@ use crate::models::ProviderId;
 
 pub const OFFICIAL_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
 pub const LATEST_RELEASE_URL: &str = "https://github.com/RupingLiu/QuotaDock/releases/latest";
-pub const DEEPSEEK_BALANCE_URL: &str = "https://platform.deepseek.com/usage";
-pub const KIMI_ACCOUNT_URL: &str = "https://platform.moonshot.cn/console/account";
+pub const DEEPSEEK_TOP_UP_URL: &str = "https://platform.deepseek.com/top_up";
+pub const KIMI_CODE_URL: &str = "https://www.kimi.com/code";
 
 pub fn show(app: &AppHandle) -> Result<(), String> {
     let window = app
@@ -34,8 +34,8 @@ pub fn open_official_usage() -> Result<(), String> {
 pub fn open_provider_portal(provider: ProviderId) -> Result<(), String> {
     let (url, operation_name) = match provider {
         ProviderId::Codex => (OFFICIAL_USAGE_URL, "打开 Codex 官方用量页面"),
-        ProviderId::DeepSeek => (DEEPSEEK_BALANCE_URL, "打开 DeepSeek 官方余额页面"),
-        ProviderId::Kimi => (KIMI_ACCOUNT_URL, "打开 Kimi 官方账户页面"),
+        ProviderId::DeepSeek => (DEEPSEEK_TOP_UP_URL, "打开 DeepSeek 官方充值页面"),
+        ProviderId::Kimi => (KIMI_CODE_URL, "打开 Kimi Code 官方页面"),
     };
     open_external_url(url, operation_name)
 }
@@ -75,7 +75,9 @@ mod tests {
 
     #[test]
     fn provider_portals_are_fixed_https_urls() {
-        for url in [OFFICIAL_USAGE_URL, DEEPSEEK_BALANCE_URL, KIMI_ACCOUNT_URL] {
+        assert_eq!(DEEPSEEK_TOP_UP_URL, "https://platform.deepseek.com/top_up");
+        assert_eq!(KIMI_CODE_URL, "https://www.kimi.com/code");
+        for url in [OFFICIAL_USAGE_URL, DEEPSEEK_TOP_UP_URL, KIMI_CODE_URL] {
             assert!(url.starts_with("https://"));
             assert!(!url.contains(['\r', '\n']));
         }

@@ -29,7 +29,7 @@ impl ProviderError {
     pub fn invalid_response() -> Self {
         Self::new(
             ProviderErrorCategory::InvalidResponse,
-            "余额服务返回了无法识别的响应。",
+            "额度服务返回了无法识别的响应。",
         )
     }
 
@@ -41,15 +41,15 @@ impl ProviderError {
             ),
             StatusCode::PAYMENT_REQUIRED => Self::new(
                 ProviderErrorCategory::InsufficientBalance,
-                "账户余额不足，余额服务拒绝了请求。",
+                "账户额度或余额不足，服务拒绝了请求。",
             ),
             StatusCode::TOO_MANY_REQUESTS => Self::new(
                 ProviderErrorCategory::RateLimited,
-                "余额查询过于频繁，请稍后重试。",
+                "额度查询过于频繁，请稍后重试。",
             ),
             status if status.is_server_error() => Self::new(
                 ProviderErrorCategory::Server,
-                "余额服务暂时不可用，请稍后重试。",
+                "额度服务暂时不可用，请稍后重试。",
             ),
             _ => Self::invalid_response(),
         }
@@ -60,11 +60,11 @@ impl From<HttpError> for ProviderError {
     fn from(error: HttpError) -> Self {
         match error.kind() {
             HttpErrorKind::Timeout => {
-                Self::new(ProviderErrorCategory::Timeout, "余额查询超时，请稍后重试。")
+                Self::new(ProviderErrorCategory::Timeout, "额度查询超时，请稍后重试。")
             }
             HttpErrorKind::Network => Self::new(
                 ProviderErrorCategory::Network,
-                "无法连接余额服务，请检查网络或代理。",
+                "无法连接额度服务，请检查网络或代理。",
             ),
             HttpErrorKind::InvalidResponse => Self::invalid_response(),
         }

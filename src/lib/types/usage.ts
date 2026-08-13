@@ -44,8 +44,6 @@ export type DeepSeekSnapshot = {
   balances: DeepSeekBalance[];
 };
 
-export type KimiRegion = "china";
-
 export type CredentialAvailability =
   | "configured"
   | "not-configured"
@@ -53,28 +51,33 @@ export type CredentialAvailability =
 
 export type CredentialTarget =
   | { provider: "deepseek" }
-  | { provider: "kimi"; region: "china" };
+  | { provider: "kimi" };
 
-export type ProviderCredentialStatus =
-  | {
-      providerId: "deepseek";
-      region: null;
-      availability: CredentialAvailability;
-    }
-  | {
-      providerId: "kimi";
-      region: "china";
-      availability: CredentialAvailability;
-    };
+export type ProviderCredentialStatus = {
+  providerId: "deepseek" | "kimi";
+  availability: CredentialAvailability;
+};
+
+export type KimiUsageWindowUnit = "minute" | "hour" | "day" | "week";
+
+export type KimiUsageWindow = {
+  duration: number;
+  unit: KimiUsageWindowUnit;
+};
+
+export type KimiUsage = {
+  name: string | null;
+  window: KimiUsageWindow | null;
+  used: string;
+  limit: string;
+  resetAt: string | null;
+};
 
 export type KimiSnapshot = {
   id: string;
   capturedAt: string;
-  region: KimiRegion;
-  currency: string;
-  availableBalance: string;
-  cashBalance: string;
-  voucherBalance: string;
+  total: KimiUsage | null;
+  limits: KimiUsage[];
 };
 
 export type ProviderSnapshot =

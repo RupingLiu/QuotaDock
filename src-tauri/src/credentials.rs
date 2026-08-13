@@ -1,10 +1,10 @@
-use crate::models::{KimiRegion, ProviderId};
+use crate::models::ProviderId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const CREDENTIAL_SERVICE: &str = "com.rupingliu.quotadock";
 pub const DEEPSEEK_ACCOUNT: &str = "deepseek-api-key";
-pub const KIMI_CHINA_ACCOUNT: &str = "kimi-cn-api-key";
+pub const KIMI_CODE_ACCOUNT: &str = "kimi-code-api-key";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialStoreErrorKind {
@@ -143,7 +143,6 @@ pub enum CredentialAvailability {
 #[serde(rename_all = "camelCase")]
 pub struct CredentialStatus {
     pub provider_id: ProviderId,
-    pub region: Option<KimiRegion>,
     pub availability: CredentialAvailability,
 }
 
@@ -152,35 +151,29 @@ pub type ProviderCredentialStatus = CredentialStatus;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CredentialTarget {
     provider_id: ProviderId,
-    region: Option<KimiRegion>,
     account: &'static str,
 }
 
 impl CredentialTarget {
     const DEEPSEEK: Self = Self {
         provider_id: ProviderId::DeepSeek,
-        region: None,
         account: DEEPSEEK_ACCOUNT,
     };
-    const KIMI_CHINA: Self = Self {
+    const KIMI_CODE: Self = Self {
         provider_id: ProviderId::Kimi,
-        region: Some(KimiRegion::China),
-        account: KIMI_CHINA_ACCOUNT,
+        account: KIMI_CODE_ACCOUNT,
     };
-    fn resolve(provider_id: ProviderId, region: Option<KimiRegion>) -> Result<Self, String> {
-        match (provider_id, region) {
-            (ProviderId::DeepSeek, None) => Ok(Self::DEEPSEEK),
-            (ProviderId::Kimi, Some(KimiRegion::China)) => Ok(Self::KIMI_CHINA),
-            (ProviderId::Kimi, None) => Err("Kimi 凭据必须指定国内区域。".to_string()),
-            (ProviderId::DeepSeek, Some(_)) => Err("DeepSeek 凭据不接受区域参数。".to_string()),
-            (ProviderId::Codex, _) => Err("Codex 不使用 API Key 凭据。".to_string()),
+    fn resolve(provider_id: ProviderId) -> Result<Self, String> {
+        match provider_id {
+            ProviderId::DeepSeek => Ok(Self::DEEPSEEK),
+            ProviderId::Kimi => Ok(Self::KIMI_CODE),
+            ProviderId::Codex => Err("Codex 不使用 API Key 凭据。".to_string()),
         }
     }
 
     fn status(self, availability: CredentialAvailability) -> CredentialStatus {
         CredentialStatus {
             provider_id: self.provider_id,
-            region: self.region,
             availability,
         }
     }
@@ -189,10 +182,9 @@ impl CredentialTarget {
 pub fn set_provider_credential_with_store<S: CredentialStore>(
     store: &S,
     provider_id: ProviderId,
-    region: Option<KimiRegion>,
     secret: &str,
 ) -> Result<CredentialStatus, String> {
-    let target = CredentialTarget::resolve(provider_id, region)?;
+    let target = CredentialTarget::resolve(provider_id)?;
     let secret = secret.trim();
     if secret.is_empty() {
         return Err("API Key 不能为空。".to_string());
@@ -207,9 +199,8 @@ pub fn set_provider_credential_with_store<S: CredentialStore>(
 pub fn delete_provider_credential_with_store<S: CredentialStore>(
     store: &S,
     provider_id: ProviderId,
-    region: Option<KimiRegion>,
 ) -> Result<CredentialStatus, String> {
-    let target = CredentialTarget::resolve(provider_id, region)?;
+    let target = CredentialTarget::resolve(provider_id)?;
     store
         .delete_credential(target.account)
         .map_err(|error| error.to_string())?;
@@ -219,7 +210,7 @@ pub fn delete_provider_credential_with_store<S: CredentialStore>(
 pub fn provider_credential_status_with_store<S: CredentialStore>(
     store: &S,
 ) -> Vec<ProviderCredentialStatus> {
-    [CredentialTarget::DEEPSEEK, CredentialTarget::KIMI_CHINA]
+    [CredentialTarget::DEEPSEEK, CredentialTarget::KIMI_CODE]
         .into_iter()
         .map(|target| {
             let availability = match store.get_password(target.account) {
@@ -239,9 +230,8 @@ pub fn provider_credential_status_with_store<S: CredentialStore>(
 pub fn load_provider_credential<S: CredentialStore>(
     store: &S,
     provider_id: ProviderId,
-    region: Option<KimiRegion>,
 ) -> Result<String, CredentialStoreError> {
-    let target = CredentialTarget::resolve(provider_id, region)
+    let target = CredentialTarget::resolve(provider_id)
         .map_err(|_| CredentialStoreError::new(CredentialStoreErrorKind::OperationFailed))?;
     store.get_password(target.account)
 }
@@ -309,47 +299,39 @@ mod tests {
     #[test]
     fn fixed_accounts_are_distinct() {
         assert_eq!(
-            CredentialTarget::resolve(ProviderId::DeepSeek, None)
+            CredentialTarget::resolve(ProviderId::DeepSeek)
                 .unwrap()
                 .account,
             DEEPSEEK_ACCOUNT
         );
         assert_eq!(
-            CredentialTarget::resolve(ProviderId::Kimi, Some(KimiRegion::China))
-                .unwrap()
-                .account,
-            KIMI_CHINA_ACCOUNT
+            CredentialTarget::resolve(ProviderId::Kimi).unwrap().account,
+            KIMI_CODE_ACCOUNT
         );
-        assert_ne!(DEEPSEEK_ACCOUNT, KIMI_CHINA_ACCOUNT);
+        assert_ne!(DEEPSEEK_ACCOUNT, KIMI_CODE_ACCOUNT);
     }
 
     #[test]
     fn memory_store_sets_replaces_and_deletes_without_cross_provider_access() {
         let store = MemoryCredentialStore::default();
 
-        set_provider_credential_with_store(&store, ProviderId::DeepSeek, None, " ds-one ").unwrap();
-        set_provider_credential_with_store(
-            &store,
-            ProviderId::Kimi,
-            Some(KimiRegion::China),
-            "kimi-one",
-        )
-        .unwrap();
-        set_provider_credential_with_store(&store, ProviderId::DeepSeek, None, "ds-two").unwrap();
+        set_provider_credential_with_store(&store, ProviderId::DeepSeek, " ds-one ").unwrap();
+        set_provider_credential_with_store(&store, ProviderId::Kimi, "kimi-one").unwrap();
+        set_provider_credential_with_store(&store, ProviderId::DeepSeek, "ds-two").unwrap();
 
         assert_eq!(
-            load_provider_credential(&store, ProviderId::DeepSeek, None).unwrap(),
+            load_provider_credential(&store, ProviderId::DeepSeek).unwrap(),
             "ds-two"
         );
         assert_eq!(
-            load_provider_credential(&store, ProviderId::Kimi, Some(KimiRegion::China)).unwrap(),
+            load_provider_credential(&store, ProviderId::Kimi).unwrap(),
             "kimi-one"
         );
 
-        delete_provider_credential_with_store(&store, ProviderId::DeepSeek, None).unwrap();
-        assert!(load_provider_credential(&store, ProviderId::DeepSeek, None).is_err());
+        delete_provider_credential_with_store(&store, ProviderId::DeepSeek).unwrap();
+        assert!(load_provider_credential(&store, ProviderId::DeepSeek).is_err());
         assert_eq!(
-            load_provider_credential(&store, ProviderId::Kimi, Some(KimiRegion::China)).unwrap(),
+            load_provider_credential(&store, ProviderId::Kimi).unwrap(),
             "kimi-one"
         );
     }
@@ -358,7 +340,7 @@ mod tests {
     fn statuses_only_expose_configuration_state() {
         let store = MemoryCredentialStore::default();
         let secret = "secret-that-must-not-escape";
-        set_provider_credential_with_store(&store, ProviderId::DeepSeek, None, secret).unwrap();
+        set_provider_credential_with_store(&store, ProviderId::DeepSeek, secret).unwrap();
 
         let statuses = provider_credential_status_with_store(&store);
         let serialized = serde_json::to_string(&statuses).unwrap();
@@ -381,13 +363,9 @@ mod tests {
         store.fail_with(CredentialStoreErrorKind::Unavailable);
 
         let statuses = provider_credential_status_with_store(&store);
-        let error = set_provider_credential_with_store(
-            &store,
-            ProviderId::DeepSeek,
-            None,
-            "never-print-me",
-        )
-        .unwrap_err();
+        let error =
+            set_provider_credential_with_store(&store, ProviderId::DeepSeek, "never-print-me")
+                .unwrap_err();
 
         assert!(statuses
             .iter()
@@ -401,7 +379,7 @@ mod tests {
         let store = MemoryCredentialStore::default();
 
         let error =
-            delete_provider_credential_with_store(&store, ProviderId::DeepSeek, None).unwrap_err();
+            delete_provider_credential_with_store(&store, ProviderId::DeepSeek).unwrap_err();
 
         assert_eq!(error, "未找到已保存的凭据。");
     }
@@ -410,15 +388,8 @@ mod tests {
     fn invalid_targets_and_empty_secrets_never_reach_the_store() {
         let store = MemoryCredentialStore::default();
 
-        assert!(
-            set_provider_credential_with_store(&store, ProviderId::Codex, None, "secret").is_err()
-        );
-        assert!(
-            set_provider_credential_with_store(&store, ProviderId::DeepSeek, None, "  ").is_err()
-        );
-        assert!(
-            set_provider_credential_with_store(&store, ProviderId::Kimi, None, "secret").is_err()
-        );
+        assert!(set_provider_credential_with_store(&store, ProviderId::Codex, "secret").is_err());
+        assert!(set_provider_credential_with_store(&store, ProviderId::DeepSeek, "  ").is_err());
         assert!(store.entries.lock().unwrap().is_empty());
     }
 }

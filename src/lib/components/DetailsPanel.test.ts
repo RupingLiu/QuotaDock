@@ -36,7 +36,7 @@ const snapshot: QuotaSnapshot = {
 };
 
 const appState: AppState = {
-  version: 5,
+  version: 6,
   revision: 1,
   providers: {
     codex: {
@@ -114,11 +114,17 @@ function connectedState(): AppState {
           data: {
             id: "kimi-1",
             capturedAt: "unix:1781769600",
-            region: "china",
-            currency: "CNY",
-            availableBalance: "0",
-            cashBalance: "-1.25",
-            voucherBalance: "0",
+            total: {
+              name: "总使用量",
+              window: null,
+              used: "522",
+              limit: "1000",
+              resetAt: "2030-08-26T00:00:00Z",
+            },
+            limits: [
+              { name: "Code", window: { duration: 5, unit: "hour" }, used: "0", limit: "100", resetAt: "2030-08-14T07:19:00Z" },
+              { name: "Code", window: { duration: 7, unit: "day" }, used: "157", limit: "10000", resetAt: "2030-08-17T09:19:00Z" },
+            ],
           },
         },
         lastAttemptAt: "unix:1781769600",
@@ -194,8 +200,8 @@ beforeEach(() => {
     }
     if (command === "get_provider_credential_status") {
       return Promise.resolve([
-        { providerId: "deepseek", region: null, availability: "not-configured" },
-        { providerId: "kimi", region: "china", availability: "not-configured" },
+        { providerId: "deepseek", availability: "not-configured" },
+        { providerId: "kimi", availability: "not-configured" },
       ]);
     }
     if (command === "get_app_state") return Promise.resolve(appState);
@@ -272,7 +278,7 @@ describe("DetailsPanel", () => {
     });
   });
 
-  it("shows every DeepSeek currency and preserves Kimi zero and negative balances", () => {
+  it("shows every DeepSeek currency and all Kimi Coding Plan windows", () => {
     render(DetailsPanel, { props: { appState: connectedState() } });
 
     expect(screen.getByText("USD 充值余额")).toBeTruthy();
@@ -280,9 +286,13 @@ describe("DetailsPanel", () => {
     expect(screen.getByText("CNY 充值余额")).toBeTruthy();
     expect(screen.getByText("¥0.00")).toBeTruthy();
     expect(screen.getByText(/账户余额接口：不可用/)).toBeTruthy();
-    expect(screen.getByText("¥-1.25")).toBeTruthy();
-    expect(screen.getAllByText("¥0").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/区域：中国站/)).toBeTruthy();
+    expect(screen.getByText("总使用量")).toBeTruthy();
+    expect(screen.getByText("Code · 5 小时")).toBeTruthy();
+    expect(screen.getByText("Code · 7 天")).toBeTruthy();
+    expect(screen.getByText("剩余 47.8%")).toBeTruthy();
+    expect(screen.getByText("剩余 100%")).toBeTruthy();
+    expect(screen.getByText("剩余 98.43%")).toBeTruthy();
+    expect(screen.getByText(/官方接口不保证返回 Kimi \/ Code 分段/)).toBeTruthy();
   });
 
   it("keeps full-precision DeepSeek totals accessible without ellipsis", () => {
@@ -421,7 +431,7 @@ describe("DetailsPanel", () => {
         storageStatus: "ready", startupEnabled: false, signedUpdatesEnabled: true,
       });
       if (command === "get_update_status") return Promise.resolve(idleUpdateStatus);
-      return Promise.resolve({ providerId: "deepseek", region: null, availability: "configured" });
+      return Promise.resolve({ providerId: "deepseek", availability: "configured" });
     });
     const { container } = render(DetailsPanel, { props: { appState: current } });
     const input = container.querySelector<HTMLInputElement>("#deepseek-key")!;
@@ -430,15 +440,14 @@ describe("DetailsPanel", () => {
     expect(input.getAttribute("spellcheck")).toBe("false");
     expect(input.getAttribute("autocapitalize")).toBe("none");
     expect(screen.getByRole("button", { name: "替换 DeepSeek API Key" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "替换 Kimi 国内站 API Key" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "删除 Kimi 国内站 API Key" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "替换 Kimi Code API Key" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "删除 Kimi Code API Key" })).toBeTruthy();
     await fireEvent.input(input, { target: { value: "sk-local-test-value" } });
     await fireEvent.click(screen.getByRole("button", { name: "替换 DeepSeek API Key" }));
     await waitFor(() => expect(input.value).toBe(""));
     expect(container.textContent).not.toContain("sk-local-test-value");
     expect(invoke).toHaveBeenCalledWith("set_provider_credential", {
       provider: "deepseek",
-      region: null,
       secret: "sk-local-test-value",
     });
   });
@@ -450,9 +459,8 @@ describe("DetailsPanel", () => {
     expect(confirm).toHaveBeenCalled();
     expect(invoke).toHaveBeenCalledWith("delete_provider_credential", {
       provider: "deepseek",
-      region: null,
     });
-    await fireEvent.click(screen.getByRole("button", { name: /打开 Kimi 官方账户页/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /打开 Kimi Code 官方页面/ }));
     expect(invoke).toHaveBeenCalledWith("open_provider_portal", { provider: "kimi" });
     confirm.mockRestore();
   });

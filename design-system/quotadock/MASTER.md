@@ -18,7 +18,7 @@
 ```text
 [state] [Codex] 46% 6/23 09:00 [3m] [...]
 [state] [DeepSeek] ¥100.00 充值余额 [3m] [...]
-[state] [Kimi] ¥49.59 可用余额 [3m] [...]
+[state] [Kimi] 总 48% 5h 42% [3m] [...]
 ```
 
 - Default size: `260 × 36px`; minimum supported width: `240px`.
@@ -26,7 +26,7 @@
 - Outer padding: `8px` horizontal, `3px` vertical.
 - Menu hit target: `24 × 24px`.
 - At the `240px` compatibility width, truncate reset text only after preserving the percentage, freshness/error state, and menu.
-- The full non-interactive surface remains draggable; provider label and menu button are not drag targets.
+- The full non-interactive surface remains draggable; provider label, DeepSeek top-up action and menu button are not drag targets.
 
 ## Color Tokens
 
@@ -77,8 +77,9 @@ warning color and a literal `!`, not orange alone.
   → Codex account/trend → provider connections → rotation settings → behavior settings → diagnostics.
 - The quota card uses percent, progress, and reset time. The small trend shows one clearly
   labeled weekly series and never invents forecasts.
-- DeepSeek shows every returned currency and preserves amount strings. Kimi shows available,
-  cash, voucher, region, and currency; zero and negative values are valid data.
+- DeepSeek shows every returned currency and preserves amount strings. Kimi shows the Coding Plan
+  total plus every returned Code window and reset time. The strip keeps only total remaining and the
+  most constrained window; it never invents an undocumented Kimi/Code split.
 - Credential inputs are password fields and are cleared after save/failure. Only configuration
   status reaches the UI; secrets are never refilled. Deletion requires confirmation.
 - Settings use native semantic checkboxes styled as compact switches; every row includes

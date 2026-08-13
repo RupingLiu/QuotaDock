@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const STATE_VERSION: u32 = 5;
+pub const STATE_VERSION: u32 = 6;
 pub const DEFAULT_STATUS_MESSAGE: &str = "尚未获取额度。可通过托盘刷新，后台也会自动查询。";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -90,9 +90,29 @@ pub struct DeepSeekSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum KimiRegion {
-    China,
+#[serde(rename_all = "lowercase")]
+pub enum KimiUsageWindowUnit {
+    Minute,
+    Hour,
+    Day,
+    Week,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KimiUsageWindow {
+    pub duration: u64,
+    pub unit: KimiUsageWindowUnit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KimiUsage {
+    pub name: Option<String>,
+    pub window: Option<KimiUsageWindow>,
+    pub used: String,
+    pub limit: String,
+    pub reset_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,11 +120,8 @@ pub enum KimiRegion {
 pub struct KimiSnapshot {
     pub id: String,
     pub captured_at: String,
-    pub region: KimiRegion,
-    pub currency: String,
-    pub available_balance: String,
-    pub cash_balance: String,
-    pub voucher_balance: String,
+    pub total: Option<KimiUsage>,
+    pub limits: Vec<KimiUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -527,9 +544,9 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, DeepSeekBalance, DeepSeekSnapshot, KimiRegion, KimiSnapshot,
-        ProviderErrorCategory, ProviderHealth, ProviderId, ProviderSnapshot, ProviderStates,
-        SettingsPatch, StoredState, STATE_VERSION,
+        AppSettings, DeepSeekBalance, DeepSeekSnapshot, KimiSnapshot, KimiUsage, KimiUsageWindow,
+        KimiUsageWindowUnit, ProviderErrorCategory, ProviderHealth, ProviderId, ProviderSnapshot,
+        ProviderStates, SettingsPatch, StoredState, STATE_VERSION,
     };
 
     #[test]
@@ -572,22 +589,35 @@ mod tests {
     }
 
     #[test]
-    fn kimi_snapshot_preserves_negative_and_trailing_decimal_digits() {
+    fn kimi_snapshot_preserves_coding_plan_windows_as_integer_strings() {
         let snapshot = ProviderSnapshot::Kimi(KimiSnapshot {
             id: "kimi-1".to_string(),
             captured_at: "unix:2".to_string(),
-            region: KimiRegion::China,
-            currency: "CNY".to_string(),
-            available_balance: "49.5900".to_string(),
-            cash_balance: "-0.4100".to_string(),
-            voucher_balance: "50.0000".to_string(),
+            total: Some(KimiUsage {
+                name: Some("Total usage".to_string()),
+                window: None,
+                used: "17".to_string(),
+                limit: "100".to_string(),
+                reset_at: Some("2030-01-01T00:00:00Z".to_string()),
+            }),
+            limits: vec![KimiUsage {
+                name: None,
+                window: Some(KimiUsageWindow {
+                    duration: 5,
+                    unit: KimiUsageWindowUnit::Hour,
+                }),
+                used: "12345678901234567890".to_string(),
+                limit: "99999999999999999999".to_string(),
+                reset_at: None,
+            }],
         });
 
         let json = serde_json::to_string(&snapshot).unwrap();
 
         assert!(json.contains(r#""provider":"kimi""#));
-        assert!(json.contains(r#""availableBalance":"49.5900""#));
-        assert!(json.contains(r#""cashBalance":"-0.4100""#));
+        assert!(json.contains(r#""used":"12345678901234567890""#));
+        assert!(json.contains(r#""unit":"hour""#));
+        assert!(!json.contains("availableBalance"));
     }
 
     #[test]

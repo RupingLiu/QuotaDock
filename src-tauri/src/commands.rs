@@ -5,9 +5,9 @@ use crate::credentials::{
 };
 use crate::http_client::HttpClient;
 use crate::models::{
-    AppDiagnostics, AppState, KimiRegion, ProviderErrorCategory, ProviderId,
-    ProviderRefreshOutcome, ProviderRefreshResult, ProviderSnapshot, QuotaSnapshot,
-    RefreshProvidersResult, RefreshUsageResult, SettingsPatch, SnapshotSource, PROVIDER_ORDER,
+    AppDiagnostics, AppState, ProviderErrorCategory, ProviderId, ProviderRefreshOutcome,
+    ProviderRefreshResult, ProviderSnapshot, QuotaSnapshot, RefreshProvidersResult,
+    RefreshUsageResult, SettingsPatch, SnapshotSource, PROVIDER_ORDER,
 };
 use crate::providers::{self, ProviderError};
 use crate::status_parser::{parse_status_text_with_source, ParseClock};
@@ -195,12 +195,8 @@ impl SystemProviderFetcher {
             })
     }
 
-    fn credential(
-        &self,
-        provider_id: ProviderId,
-        region: Option<KimiRegion>,
-    ) -> Result<String, ProviderFetchOutcome> {
-        credentials::load_provider_credential(&WindowsCredentialStore, provider_id, region).map_err(
+    fn credential(&self, provider_id: ProviderId) -> Result<String, ProviderFetchOutcome> {
+        credentials::load_provider_credential(&WindowsCredentialStore, provider_id).map_err(
             |error| match error.kind() {
                 CredentialStoreErrorKind::NotFound => ProviderFetchOutcome::NotConfigured,
                 CredentialStoreErrorKind::Unavailable
@@ -227,7 +223,7 @@ impl ProviderFetcher for SystemProviderFetcher {
                     configured: Some(true),
                 }),
             ProviderId::DeepSeek => {
-                let credential = match self.credential(ProviderId::DeepSeek, None) {
+                let credential = match self.credential(ProviderId::DeepSeek) {
                     Ok(credential) => credential,
                     Err(outcome) => return outcome,
                 };
@@ -243,7 +239,7 @@ impl ProviderFetcher for SystemProviderFetcher {
                     })
             }
             ProviderId::Kimi => {
-                let credential = match self.credential(ProviderId::Kimi, Some(KimiRegion::China)) {
+                let credential = match self.credential(ProviderId::Kimi) {
                     Ok(credential) => credential,
                     Err(outcome) => return outcome,
                 };
@@ -556,7 +552,6 @@ pub fn show_dashboard_context_menu(app: AppHandle, x: f64, y: f64) -> Result<(),
 pub fn set_provider_credential(
     app: AppHandle,
     provider: ProviderId,
-    region: Option<KimiRegion>,
     secret: String,
 ) -> Result<CredentialStatus, String> {
     let store = store_for_app(&app)?;
@@ -571,13 +566,8 @@ pub fn set_provider_credential(
         .commit_lock
         .lock()
         .map_err(|_| "凭据状态写入锁不可用。".to_string())?;
-    let (status, app_state) = set_provider_credential_and_sync(
-        &WindowsCredentialStore,
-        &store,
-        provider,
-        region,
-        &secret,
-    )?;
+    let (status, app_state) =
+        set_provider_credential_and_sync(&WindowsCredentialStore, &store, provider, &secret)?;
     drop(_commit);
     emit_configuration_state(&app, app_state, provider, "连接凭据已保存。");
     Ok(status)
@@ -587,7 +577,6 @@ pub fn set_provider_credential(
 pub fn delete_provider_credential(
     app: AppHandle,
     provider: ProviderId,
-    region: Option<KimiRegion>,
 ) -> Result<CredentialStatus, String> {
     let store = store_for_app(&app)?;
     let coordinator = app
@@ -602,7 +591,7 @@ pub fn delete_provider_credential(
         .lock()
         .map_err(|_| "凭据状态写入锁不可用。".to_string())?;
     let (status, app_state) =
-        delete_provider_credential_and_sync(&WindowsCredentialStore, &store, provider, region)?;
+        delete_provider_credential_and_sync(&WindowsCredentialStore, &store, provider)?;
     drop(_commit);
     emit_configuration_state(&app, app_state, provider, "连接凭据已删除。");
     Ok(status)
@@ -612,21 +601,15 @@ fn set_provider_credential_and_sync<S: CredentialStore>(
     credential_store: &S,
     usage_store: &UsageStore,
     provider_id: ProviderId,
-    region: Option<KimiRegion>,
     secret: &str,
 ) -> Result<(CredentialStatus, AppState), String> {
-    let previous =
-        match credentials::load_provider_credential(credential_store, provider_id, region) {
-            Ok(secret) => Some(secret),
-            Err(error) if error.kind() == CredentialStoreErrorKind::NotFound => None,
-            Err(error) => return Err(error.to_string()),
-        };
-    let status = credentials::set_provider_credential_with_store(
-        credential_store,
-        provider_id,
-        region,
-        secret,
-    )?;
+    let previous = match credentials::load_provider_credential(credential_store, provider_id) {
+        Ok(secret) => Some(secret),
+        Err(error) if error.kind() == CredentialStoreErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let status =
+        credentials::set_provider_credential_with_store(credential_store, provider_id, secret)?;
     let app_state = match usage_store.set_provider_configured(provider_id, true) {
         Ok(outcome) => outcome.into_app_state(),
         Err(_) => {
@@ -634,14 +617,12 @@ fn set_provider_credential_and_sync<S: CredentialStore>(
                 Some(previous) => credentials::set_provider_credential_with_store(
                     credential_store,
                     provider_id,
-                    region,
                     &previous,
                 )
                 .map(|_| ()),
                 None => credentials::delete_provider_credential_with_store(
                     credential_store,
                     provider_id,
-                    region,
                 )
                 .map(|_| ()),
             };
@@ -659,19 +640,16 @@ fn delete_provider_credential_and_sync<S: CredentialStore>(
     credential_store: &S,
     usage_store: &UsageStore,
     provider_id: ProviderId,
-    region: Option<KimiRegion>,
 ) -> Result<(CredentialStatus, AppState), String> {
-    let previous = credentials::load_provider_credential(credential_store, provider_id, region)
+    let previous = credentials::load_provider_credential(credential_store, provider_id)
         .map_err(|error| error.to_string())?;
-    let status =
-        credentials::delete_provider_credential_with_store(credential_store, provider_id, region)?;
+    let status = credentials::delete_provider_credential_with_store(credential_store, provider_id)?;
     let app_state = match usage_store.set_provider_configured(provider_id, false) {
         Ok(outcome) => outcome.into_app_state(),
         Err(_) => {
             let rolled_back = credentials::set_provider_credential_with_store(
                 credential_store,
                 provider_id,
-                region,
                 &previous,
             );
             return Err(if rolled_back.is_ok() {
@@ -2396,11 +2374,11 @@ mod tests {
     };
     use crate::credentials::{CredentialStore, CredentialStoreError, CredentialStoreErrorKind};
     use crate::models::{
-        AppSettings, AppState, DeepSeekBalance, DeepSeekSnapshot, KimiRegion, KimiSnapshot,
-        ProviderErrorCategory, ProviderHealth, ProviderId, ProviderRefreshOutcome,
-        ProviderRefreshResult, ProviderSnapshot, ProviderStates, QuotaReading, QuotaSnapshot,
-        RefreshProvidersResult, RefreshUsageResult, SnapshotSource, StorageStatus, PROVIDER_ORDER,
-        STATE_VERSION,
+        AppSettings, AppState, DeepSeekBalance, DeepSeekSnapshot, KimiSnapshot, KimiUsage,
+        KimiUsageWindow, KimiUsageWindowUnit, ProviderErrorCategory, ProviderHealth, ProviderId,
+        ProviderRefreshOutcome, ProviderRefreshResult, ProviderSnapshot, ProviderStates,
+        QuotaReading, QuotaSnapshot, RefreshProvidersResult, RefreshUsageResult, SnapshotSource,
+        StorageStatus, PROVIDER_ORDER, STATE_VERSION,
     };
     use crate::usage_store::UsageStore;
     use std::collections::HashMap;
@@ -2653,11 +2631,23 @@ mod tests {
             ProviderId::Kimi => ProviderSnapshot::Kimi(KimiSnapshot {
                 id: format!("kimi-{captured_at}"),
                 captured_at: captured_at.to_string(),
-                region: KimiRegion::China,
-                currency: "CNY".to_string(),
-                available_balance: "49.59".to_string(),
-                cash_balance: "3.00".to_string(),
-                voucher_balance: "46.59".to_string(),
+                total: Some(KimiUsage {
+                    name: Some("总使用量".to_string()),
+                    window: None,
+                    used: "52".to_string(),
+                    limit: "100".to_string(),
+                    reset_at: Some("2030-08-26T00:00:00Z".to_string()),
+                }),
+                limits: vec![KimiUsage {
+                    name: Some("Code".to_string()),
+                    window: Some(KimiUsageWindow {
+                        duration: 5,
+                        unit: KimiUsageWindowUnit::Hour,
+                    }),
+                    used: "0".to_string(),
+                    limit: "100".to_string(),
+                    reset_at: Some("2030-08-14T07:19:00Z".to_string()),
+                }],
             }),
         }
     }
@@ -3328,7 +3318,6 @@ mod tests {
             &credential_store,
             &usage_store,
             ProviderId::DeepSeek,
-            None,
             "test-secret",
         )
         .unwrap();
@@ -3350,7 +3339,6 @@ mod tests {
             &credential_store,
             &usage_store,
             ProviderId::DeepSeek,
-            None,
             "new-secret",
         )
         .unwrap_err();
@@ -3360,7 +3348,6 @@ mod tests {
         crate::credentials::set_provider_credential_with_store(
             &credential_store,
             ProviderId::DeepSeek,
-            None,
             "old-secret",
         )
         .unwrap();
@@ -3368,18 +3355,13 @@ mod tests {
             &credential_store,
             &usage_store,
             ProviderId::DeepSeek,
-            None,
             "replacement-secret",
         )
         .unwrap_err();
         assert_eq!(error, "状态保存失败，凭据更改已回滚。");
         assert_eq!(
-            crate::credentials::load_provider_credential(
-                &credential_store,
-                ProviderId::DeepSeek,
-                None,
-            )
-            .unwrap(),
+            crate::credentials::load_provider_credential(&credential_store, ProviderId::DeepSeek)
+                .unwrap(),
             "old-secret"
         );
     }
@@ -3394,7 +3376,6 @@ mod tests {
         crate::credentials::set_provider_credential_with_store(
             &credential_store,
             ProviderId::DeepSeek,
-            None,
             "old-secret",
         )
         .unwrap();
@@ -3403,18 +3384,13 @@ mod tests {
             &credential_store,
             &usage_store,
             ProviderId::DeepSeek,
-            None,
         )
         .unwrap_err();
 
         assert_eq!(error, "状态保存失败，凭据删除已回滚。");
         assert_eq!(
-            crate::credentials::load_provider_credential(
-                &credential_store,
-                ProviderId::DeepSeek,
-                None,
-            )
-            .unwrap(),
+            crate::credentials::load_provider_credential(&credential_store, ProviderId::DeepSeek)
+                .unwrap(),
             "old-secret"
         );
     }
@@ -3427,7 +3403,6 @@ mod tests {
         crate::credentials::set_provider_credential_with_store(
             &credential_store,
             ProviderId::DeepSeek,
-            None,
             "test-secret",
         )
         .unwrap();
@@ -3446,7 +3421,6 @@ mod tests {
             &credential_store,
             &usage_store,
             ProviderId::DeepSeek,
-            None,
         )
         .unwrap();
 

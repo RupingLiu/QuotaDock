@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PREVIOUS_STATE_VERSIONS: [u32; 3] = [2, 3, 4];
+const PREVIOUS_STATE_VERSIONS: [u32; 4] = [2, 3, 4, 5];
 const MAX_HISTORY_POINTS: usize = 672;
 const HISTORY_SAMPLE_INTERVAL_SECONDS: i64 = 15 * 60;
 const MAX_BACKUP_FILES: usize = 3;
@@ -69,7 +69,7 @@ struct LegacyStoredState {
 }
 
 // v2/v3 snapshots included fields that no longer exist. Keep migration input
-// intentionally tolerant while the current v5 persisted DTOs remain strict.
+// intentionally tolerant while the current v6 persisted DTOs remain strict.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LegacyQuotaSnapshot {
@@ -154,6 +154,16 @@ impl UsageStore {
         let (mut state, migrated) = if version == STATE_VERSION {
             match serde_json::from_str::<StoredState>(&raw) {
                 Ok(state) => (state, false),
+                Err(_) => {
+                    let backup_path = self.backup_existing_file("corrupt")?;
+                    let state = recovered_state(StorageStatus::Recovered, &backup_path);
+                    self.save_state(&state)?;
+                    return Ok(self.outcome(state, StorageStatus::Recovered, Some(backup_path)));
+                }
+            }
+        } else if version == 5 {
+            match migrate_v5_state(&raw) {
+                Ok(state) => (state, true),
                 Err(_) => {
                     let backup_path = self.backup_existing_file("corrupt")?;
                     let state = recovered_state(StorageStatus::Recovered, &backup_path);
@@ -503,6 +513,32 @@ fn migrate_previous_state(mut legacy: LegacyStoredState) -> StoredState {
     }
 }
 
+/// v0.6.0 briefly persisted Moonshot API balance data under the Kimi provider.
+/// Kimi Code uses a different credential and quota contract, so preserve Codex,
+/// DeepSeek and settings while clearing only the incompatible Kimi provider.
+fn migrate_v5_state(raw: &str) -> Result<StoredState, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(raw)?;
+    value["version"] = serde_json::json!(STATE_VERSION);
+    if let Some(providers) = value
+        .get_mut("providers")
+        .and_then(|value| value.as_object_mut())
+    {
+        providers.insert(
+            "kimi".to_string(),
+            serde_json::to_value(ProviderStates::default().kimi)?,
+        );
+    }
+    if let Some(ids) = value
+        .get_mut("settings")
+        .and_then(|value| value.as_object_mut())
+        .and_then(|settings| settings.get_mut("floatingProviderIds"))
+        .and_then(|value| value.as_array_mut())
+    {
+        ids.retain(|value| value.as_str() != Some("kimi"));
+    }
+    serde_json::from_value(value)
+}
+
 fn normalize_state(state: &mut StoredState) {
     state.version = STATE_VERSION;
     state.providers.normalize();
@@ -671,8 +707,9 @@ fn unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use crate::models::{
-        ProviderHealth, ProviderId, QuotaReading, QuotaSnapshot, SettingsPatch, SnapshotSource,
-        StorageStatus, StoredState, STATE_VERSION,
+        DeepSeekBalance, DeepSeekSnapshot, ProviderHealth, ProviderId, ProviderSnapshot,
+        QuotaReading, QuotaSnapshot, SettingsPatch, SnapshotSource, StorageStatus, StoredState,
+        STATE_VERSION,
     };
     use crate::usage_store::UsageStore;
     use std::path::{Path, PathBuf};
@@ -925,6 +962,70 @@ mod tests {
     }
 
     #[test]
+    fn v5_migration_preserves_other_providers_but_clears_old_kimi_api_balance() {
+        let dir = TestDir::new("migrate-v5-kimi-contract");
+        let path = dir.path().join("state.json");
+        let mut previous = StoredState::default();
+        previous.version = 5;
+        previous.revision = 7;
+        previous.providers.deepseek.configured = true;
+        previous.providers.deepseek.health = ProviderHealth::Fresh;
+        previous.providers.deepseek.latest_snapshot =
+            Some(ProviderSnapshot::DeepSeek(DeepSeekSnapshot {
+                id: "deepseek-v5".to_string(),
+                captured_at: "unix:5000".to_string(),
+                is_available: true,
+                balances: vec![DeepSeekBalance {
+                    currency: "CNY".to_string(),
+                    total_balance: "10.00".to_string(),
+                    granted_balance: "0.00".to_string(),
+                    topped_up_balance: "10.00".to_string(),
+                }],
+            }));
+        previous.settings.floating_provider_ids =
+            vec![ProviderId::Codex, ProviderId::DeepSeek, ProviderId::Kimi];
+        let mut value = serde_json::to_value(previous).unwrap();
+        value["providers"]["kimi"] = serde_json::json!({
+            "configured": true,
+            "latestSnapshot": {
+                "provider": "kimi",
+                "data": {
+                    "id": "old-moonshot-balance",
+                    "capturedAt": "unix:5000",
+                    "region": "china",
+                    "currency": "CNY",
+                    "availableBalance": "49.59",
+                    "cashBalance": "40.00",
+                    "voucherBalance": "9.59"
+                }
+            },
+            "lastAttemptAt": "unix:5000",
+            "health": "fresh",
+            "errorCategory": null
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+        let outcome = UsageStore::new(path.clone()).load().unwrap();
+
+        assert_eq!(outcome.state.version, STATE_VERSION);
+        assert_eq!(outcome.state.revision, 7);
+        assert!(outcome.state.providers.deepseek.configured);
+        assert!(matches!(
+            outcome.state.providers.deepseek.latest_snapshot,
+            Some(ProviderSnapshot::DeepSeek(_))
+        ));
+        assert!(!outcome.state.providers.kimi.configured);
+        assert!(outcome.state.providers.kimi.latest_snapshot.is_none());
+        assert_eq!(
+            outcome.state.settings.floating_provider_ids,
+            [ProviderId::Codex, ProviderId::DeepSeek]
+        );
+        let persisted = std::fs::read_to_string(path).unwrap();
+        assert!(!persisted.contains("old-moonshot-balance"));
+        assert!(!persisted.contains("availableBalance"));
+    }
+
+    #[test]
     fn failed_v4_migration_backs_up_before_recovering() {
         let dir = TestDir::new("migrate-v4-invalid");
         let path = dir.path().join("state.json");
@@ -1010,8 +1111,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_v5_fields_are_rejected_without_copying_them_into_active_state() {
-        let dir = TestDir::new("unknown-v5-field");
+    fn unknown_current_fields_are_rejected_without_copying_them_into_active_state() {
+        let dir = TestDir::new("unknown-current-field");
         let path = dir.path().join("state.json");
         let externally_injected_secret = "externally-injected-key";
         let mut value = serde_json::to_value(StoredState::default()).unwrap();

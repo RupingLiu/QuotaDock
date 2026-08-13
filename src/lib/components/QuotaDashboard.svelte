@@ -4,6 +4,7 @@
   import type {
     AppState,
     DeepSeekBalance,
+    KimiUsage,
     ProviderId,
     ProviderState,
     ProviderSnapshot,
@@ -12,8 +13,11 @@
   import {
     capturedAtToEpochMs,
     formatBalance,
+    formatCompactPercent,
+    formatKimiWindow,
     formatPercent,
     formatReset,
+    kimiRemainingPercent,
     providerErrorLabel,
   } from "$lib/utils/format";
 
@@ -49,16 +53,15 @@
   let focusPaused = false;
   let pageHidden = false;
   let reducedMotion = false;
+  let lastSelectionKey = "";
 
   $: selectedProviderIds = normalizedSelection(appState);
-  $: if (!selectedProviderIds.includes(activeProviderId)) {
-    activeProviderId = selectedProviderIds[0] ?? "codex";
-  }
+  $: syncRotationSelection(selectedProviderIds.join("|"));
   $: providerState = appState?.providers[activeProviderId] ?? null;
   $: snapshot = matchingSnapshot(providerState, activeProviderId);
   $: weekly = snapshot?.provider === "codex" ? snapshot.data.weekly : emptyReading;
-  $: weeklyIsLow =
-    typeof weekly.remainingPercent === "number" && weekly.remainingPercent <= 20;
+  $: remainingPercent = activeRemainingPercent(snapshot, weekly);
+  $: quotaIsLow = typeof remainingPercent === "number" && remainingPercent <= 20;
   $: capturedAt = snapshot?.data.capturedAt ?? null;
   $: displayState = resolveDisplayState(providerState, capturedAt, nowMs, loading, refreshing, menuErrorMessage);
   $: displayStateLabel = stateLabel(displayState, Boolean(snapshot));
@@ -80,8 +83,6 @@
     appState?.statusMessage ??
     displayStateLabel;
   $: titleText = `${providerLabel} ${primary}${secondary ? ` · ${secondary}` : ""}；${displayStateLabel}${statusText ? `；${statusText}` : ""}`;
-  $: rotationKey = `${selectedProviderIds.join("|")}:${activeProviderId}`;
-  $: scheduleForKey(rotationKey);
 
   onMount(() => {
     mounted = true;
@@ -132,7 +133,12 @@
     rotationTimer = null;
   }
 
-  function scheduleForKey(_key: string): void {
+  function syncRotationSelection(key: string): void {
+    if (key === lastSelectionKey) return;
+    lastSelectionKey = key;
+    if (!selectedProviderIds.includes(activeProviderId)) {
+      activeProviderId = selectedProviderIds[0] ?? "codex";
+    }
     if (mounted) restartRotation();
   }
 
@@ -146,10 +152,19 @@
       pageHidden ||
       reducedMotion
     ) return;
-    rotationTimer = window.setTimeout(() => nextProvider(), ROTATION_INTERVAL_MS);
+    rotationTimer = window.setTimeout(() => {
+      rotationTimer = null;
+      advanceProvider();
+      restartRotation();
+    }, ROTATION_INTERVAL_MS);
   }
 
   function nextProvider(): void {
+    advanceProvider();
+    restartRotation();
+  }
+
+  function advanceProvider(): void {
     const current = selectedProviderIds.indexOf(activeProviderId);
     activeProviderId = selectedProviderIds[(current + 1) % selectedProviderIds.length] ?? "codex";
   }
@@ -184,7 +199,7 @@
       const balance = preferredDeepSeekBalance(value.data.balances);
       return formatBalance(balance?.toppedUpBalance, balance?.currency ?? "CNY");
     }
-    return formatBalance(value.data.availableBalance, value.data.currency);
+    return `总 ${formatCompactPercent(kimiRemainingPercent(value.data.total))}`;
   }
 
   function secondaryMetric(
@@ -202,7 +217,40 @@
         .replace(/后$/, "");
     }
     if (value.provider === "deepseek" && !value.data.isAvailable) return "不可用";
-    return value.provider === "deepseek" ? "充值余额" : "可用余额";
+    if (value.provider === "deepseek") return "充值余额";
+    const constrained = mostConstrainedKimiUsage(value.data.limits);
+    if (!constrained) return "Coding Plan";
+    return `${formatKimiWindow(constrained.window, true)} ${formatCompactPercent(kimiRemainingPercent(constrained))}`;
+  }
+
+  function activeRemainingPercent(
+    value: ProviderSnapshot | null,
+    reading: QuotaReading,
+  ): number | null {
+    if (value?.provider === "codex") return reading.remainingPercent;
+    if (value?.provider === "kimi") {
+      const constrained = mostConstrainedKimiUsage(value.data.limits);
+      return kimiRemainingPercent(constrained ?? value.data.total);
+    }
+    return null;
+  }
+
+  function mostConstrainedKimiUsage(limits: KimiUsage[]): KimiUsage | null {
+    return limits.reduce<KimiUsage | null>((selected, usage) => {
+      const percent = kimiRemainingPercent(usage);
+      if (percent === null) return selected;
+      const selectedPercent = kimiRemainingPercent(selected);
+      return selectedPercent === null || percent < selectedPercent ? usage : selected;
+    }, null);
+  }
+
+  function openDeepSeekTopUp(event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    menuErrorMessage = null;
+    void tauriApi.openProviderPortal("deepseek").catch(() => {
+      menuErrorMessage = "DeepSeek 充值页打开失败。";
+    });
   }
 
   function preferredDeepSeekBalance(balances: DeepSeekBalance[]): DeepSeekBalance | null {
@@ -335,7 +383,7 @@
     on:mousedown={startWindowDrag}
   >
     <span class="state-dot" aria-hidden="true"></span>
-    <div class:low={activeProviderId === "codex" && weeklyIsLow} class="quota-row">
+    <div class:low={quotaIsLow} class="quota-row">
       <button
         class="provider-button"
         type="button"
@@ -344,14 +392,24 @@
         disabled={selectedProviderIds.length < 2}
         on:click={nextProvider}
         on:pointerdown|stopPropagation
-        on:mousedown|stopPropagation
+        on:mousedown|preventDefault|stopPropagation
       >{providerLabel}</button>
       <span class="quota-metrics">
         <strong data-testid="provider-value">{primary}</strong>
-        {#if activeProviderId === "codex" && weeklyIsLow}
+        {#if quotaIsLow}
           <span class="low-flag" aria-hidden="true">!</span><span class="sr-only">低额度</span>
         {/if}
-        {#if secondary}<span class="secondary" aria-hidden="true">{secondary}</span>{/if}
+        {#if activeProviderId === "deepseek" && secondary === "充值余额"}
+          <button
+            class="secondary secondary-link"
+            type="button"
+            aria-label="打开 DeepSeek 官方充值页面"
+            title="打开 DeepSeek 官方充值页面"
+            on:click={openDeepSeekTopUp}
+            on:pointerdown|stopPropagation
+            on:mousedown|preventDefault|stopPropagation
+          >{secondary}</button>
+        {:else if secondary}<span class="secondary" aria-hidden="true">{secondary}</span>{/if}
       </span>
     </div>
     <span class="freshness" aria-hidden="true">{freshnessText}</span>
@@ -363,7 +421,7 @@
       title="打开菜单"
       on:click={showContextMenuFromButton}
       on:pointerdown|stopPropagation
-      on:mousedown|stopPropagation
+      on:mousedown|preventDefault|stopPropagation
     >
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="3" cy="8" r="1.25"></circle><circle cx="8" cy="8" r="1.25"></circle><circle cx="13" cy="8" r="1.25"></circle>
@@ -393,11 +451,13 @@
   .quota-row { min-width: 0; height: 100%; display: flex; align-items: center; gap: 5px; }
   .provider-button { min-width: 0; max-width: 72px; flex: 0 1 auto; padding: 2px 3px; overflow: hidden; border: 0; border-radius: 4px; color: #475569; background: transparent; font-size: .7rem; font-weight: 650; line-height: 1; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   .provider-button:hover:not(:disabled) { color: #0f766e; background: #e8f3f1; }
-  .provider-button:focus-visible, .menu-button:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+  .provider-button:focus-visible, .menu-button:focus-visible, .secondary-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
   .provider-button:disabled { cursor: default; }
   .quota-metrics { min-width: 0; flex: 1 1 auto; display: flex; align-items: baseline; gap: 5px; }
   strong { min-width: 0; flex: 0 1 auto; overflow: hidden; color: #172033; font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: .88rem; font-variant-numeric: tabular-nums; font-weight: 680; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
   .secondary { min-width: 0; max-width: 66px; overflow: hidden; color: #475569; font-size: .67rem; font-weight: 500; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
+  .secondary-link { flex: 0 1 auto; padding: 2px 1px; border: 0; border-radius: 3px; background: transparent; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .secondary-link:hover { color: #0f766e; }
   .low-flag { flex: 0 0 auto; margin-left: -3px; color: #9a3412; font-size: .68rem; font-weight: 800; line-height: 1; }
   .quota-row.low strong { color: #9a3412; }
   .freshness { min-width: 30px; overflow: hidden; color: #475569; font-size: .66rem; font-variant-numeric: tabular-nums; font-weight: 600; line-height: 1; text-align: right; text-overflow: ellipsis; white-space: nowrap; }

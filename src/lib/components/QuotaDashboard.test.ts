@@ -22,7 +22,7 @@ const codex: QuotaSnapshot = {
 
 function state(selected: ProviderId[] = ["codex"]): AppState {
   return {
-    version: 5,
+    version: 6,
     revision: 3,
     providers: {
       codex: { configured: true, latestSnapshot: { provider: "codex", data: codex }, lastAttemptAt: codex.capturedAt, health: "fresh", errorCategory: null },
@@ -38,7 +38,15 @@ function state(selected: ProviderId[] = ["codex"]): AppState {
       },
       kimi: {
         configured: true,
-        latestSnapshot: { provider: "kimi", data: { id: "kimi-1", capturedAt: codex.capturedAt, region: "china", currency: "CNY", availableBalance: "0", cashBalance: "-1.25", voucherBalance: "0" } },
+        latestSnapshot: { provider: "kimi", data: {
+          id: "kimi-1",
+          capturedAt: codex.capturedAt,
+          total: { name: "总使用量", window: null, used: "52", limit: "100", resetAt: "2026-08-26T00:00:00Z" },
+          limits: [
+            { name: "Code", window: { duration: 5, unit: "hour" }, used: "0", limit: "100", resetAt: "2026-08-14T07:19:00Z" },
+            { name: "Code", window: { duration: 7, unit: "day" }, used: "1", limit: "64", resetAt: "2026-08-17T09:19:00Z" },
+          ],
+        } },
         lastAttemptAt: codex.capturedAt,
         health: "fresh",
         errorCategory: null,
@@ -108,7 +116,8 @@ describe("QuotaDashboard provider rotation", () => {
     expect(screen.getByTestId("provider-value").textContent).toBe("¥100.00");
     await vi.advanceTimersByTimeAsync(8_000);
     expect(currentProvider()).toBe("kimi");
-    expect(screen.getByTestId("provider-value").textContent).toBe("¥0");
+    expect(screen.getByTestId("provider-value").textContent).toBe("总 48%");
+    expect(document.querySelector(".secondary")?.textContent).toBe("7d 98.44%");
   });
 
   it("manual switching restarts a complete eight second interval", async () => {
@@ -120,6 +129,27 @@ describe("QuotaDashboard provider rotation", () => {
     expect(currentProvider()).toBe("deepseek");
     await vi.advanceTimersByTimeAsync(1);
     expect(currentProvider()).toBe("kimi");
+  });
+
+  it("keeps rotating when state revisions update before the deadline", async () => {
+    const view = render(QuotaDashboard, { props: { appState: state(["codex", "deepseek"]) } });
+    for (let revision = 4; revision <= 8; revision += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await view.rerender({ appState: { ...state(["codex", "deepseek"]), revision } });
+    }
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(currentProvider()).toBe("deepseek");
+  });
+
+  it("opens the fixed DeepSeek top-up page from the compact secondary action", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    render(QuotaDashboard, { props: { appState: state(["codex", "deepseek"]) } });
+    await fireEvent.click(screen.getByRole("button", { name: /当前显示 Codex/ }));
+    await fireEvent.mouseDown(screen.getByRole("button", { name: "打开 DeepSeek 官方充值页面" }));
+    await fireEvent.click(screen.getByRole("button", { name: "打开 DeepSeek 官方充值页面" }));
+    expect(invoke).toHaveBeenCalledWith("open_provider_portal", { provider: "deepseek" });
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(currentProvider()).toBe("codex");
   });
 
   it("pauses for hover and restarts a full interval after leaving", async () => {

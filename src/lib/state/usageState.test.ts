@@ -27,7 +27,7 @@ const snapshot: QuotaSnapshot = {
 
 function appStateAt(revision: number, statusMessage: string): AppState {
   return {
-    version: 5,
+    version: 6,
     revision,
     providers: {
       codex: {
@@ -145,7 +145,7 @@ describe("foreground refresh freshness", () => {
   it("rejects out-of-order legacy and provider events by revision", () => {
     const state = new UsageState();
     const current = {
-      version: 5,
+      version: 6,
       revision: 4,
       providers: {
         codex: {

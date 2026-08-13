@@ -1,6 +1,6 @@
 [package]
 name = "quotadock"
-version = "0.6.0"
+version = "0.6.1"
 description = "Windows-first local Codex quota and API balance utility."
 authors = ["Ruping Liu"]
 edition = "2021"

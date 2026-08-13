@@ -1,4 +1,6 @@
 import type {
+  KimiUsage,
+  KimiUsageWindow,
   ProviderErrorCategory,
   ProviderHealth,
   QuotaReading,
@@ -26,6 +28,29 @@ export function formatBalance(amount: string | null | undefined, currency: strin
   if (amount === null || amount === undefined || amount === "") return "--";
   const prefix = currency === "CNY" ? "¥" : currency === "USD" ? "$" : `${currency} `;
   return `${prefix}${amount}`;
+}
+
+export function kimiRemainingPercent(usage: KimiUsage | null | undefined): number | null {
+  if (!usage || !/^\d+$/.test(usage.used) || !/^\d+$/.test(usage.limit)) return null;
+  const used = BigInt(usage.used);
+  const limit = BigInt(usage.limit);
+  if (limit === 0n) return null;
+  const remaining = used >= limit ? 0n : limit - used;
+  const basisPoints = (remaining * 10_000n + limit / 2n) / limit;
+  return Number(basisPoints) / 100;
+}
+
+export function formatCompactPercent(value: number | null): string {
+  if (value === null) return "--";
+  return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}%`;
+}
+
+export function formatKimiWindow(window: KimiUsageWindow | null, compact = false): string {
+  if (!window) return "总";
+  const units = compact
+    ? { minute: "m", hour: "h", day: "d", week: "w" }
+    : { minute: " 分钟", hour: " 小时", day: " 天", week: " 周" };
+  return `${window.duration}${units[window.unit]}`;
 }
 
 export function providerHealthLabel(health: ProviderHealth): string {

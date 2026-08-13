@@ -17,8 +17,11 @@
     capturedAtToEpochMs,
     formatCapturedAt,
     formatBalance,
+    formatCompactPercent,
+    formatKimiWindow,
     formatPercent,
     formatReset,
+    kimiRemainingPercent,
     progressValue,
     providerErrorLabel,
     providerHealthLabel,
@@ -229,6 +232,19 @@
 
   function kimiSnapshot(state: ProviderState | null): KimiSnapshot | null {
     return state?.latestSnapshot?.provider === "kimi" ? state.latestSnapshot.data : null;
+  }
+
+  function kimiUsageLabel(usage: KimiSnapshot["limits"][number]): string {
+    const product = usage.name?.trim() || "Code";
+    return `${product} · ${formatKimiWindow(usage.window)}`;
+  }
+
+  function kimiTotalLabel(total: NonNullable<KimiSnapshot["total"]>): string {
+    return total.name?.trim() || "套餐总使用量";
+  }
+
+  function kimiResetLabel(resetAt: string | null): string {
+    return resetAt ? `${formatCapturedAt(resetAt)} 后重置` : "未提供重置时间";
   }
 
   function providerStateCopy(health: ProviderState["health"], state: ProviderState | null): string {
@@ -520,11 +536,21 @@
         <button class="card-action" type="button" aria-label="刷新 Kimi" disabled={!kimiState?.configured || providerIsBusy("kimi")} on:click={() => refreshProvider("kimi")}>刷新</button>
       </div>
       {#if kimi}
-        <div class="quota-heading"><span>可用余额</span><strong>{formatBalance(kimi.availableBalance, kimi.currency)}</strong></div>
-        <div class="balance-parts"><span>现金 <strong>{formatBalance(kimi.cashBalance, kimi.currency)}</strong></span><span>代金券 <strong>{formatBalance(kimi.voucherBalance, kimi.currency)}</strong></span></div>
-        <p>区域：中国站 · {formatCapturedAt(kimi.capturedAt)}</p>
+        {#if kimi.total}
+          <div class="quota-heading"><span>{kimiTotalLabel(kimi.total)}</span><strong>剩余 {formatCompactPercent(kimiRemainingPercent(kimi.total))}</strong></div>
+          <div class="progress-track" aria-hidden="true"><span style={`width: ${progressValue(kimiRemainingPercent(kimi.total))}%`}></span></div>
+          <p>已用 {kimi.total.used} / {kimi.total.limit} · {kimiResetLabel(kimi.total.resetAt)}</p>
+        {/if}
+        {#each kimi.limits as limit, index (`${limit.name}-${limit.window?.duration}-${limit.window?.unit}-${index}`)}
+          <div class="balance-group kimi-limit">
+            <div class="quota-heading"><span>{kimiUsageLabel(limit)}</span><strong>剩余 {formatCompactPercent(kimiRemainingPercent(limit))}</strong></div>
+            <div class="progress-track" aria-hidden="true"><span style={`width: ${progressValue(kimiRemainingPercent(limit))}%`}></span></div>
+            <p>已用 {limit.used} / {limit.limit} · {kimiResetLabel(limit.resetAt)}</p>
+          </div>
+        {/each}
+        <p>更新于 {formatCapturedAt(kimi.capturedAt)}。总量周期以重置时间为准；官方接口不保证返回 Kimi / Code 分段。</p>
       {:else}
-        <p class="provider-empty">{kimiState?.configured ? "等待首次余额更新。" : "配置国内站 API Key 后可查询余额。"}</p>
+        <p class="provider-empty">{kimiState?.configured ? "等待首次 Coding Plan 额度更新。" : "配置 Kimi Code API Key 后可查询套餐额度。"}</p>
       {/if}
     </article>
   </section>
@@ -650,18 +676,16 @@
     </div>
 
     <div class="credential-block">
-      <div class="credential-heading"><strong>Kimi API</strong><span>{kimiState?.configured ? "已配置 · 国内站" : "未配置"}</span></div>
-      <label class="secret-label" for="kimi-region">区域</label>
-      <select id="kimi-region" disabled aria-describedby="kimi-region-note"><option>中国站（人民币）</option></select>
-      <small id="kimi-region-note" class="field-note">首版仅支持国内 API 开放平台；与 Kimi 会员、Kimi Code 不互通。</small>
-      <label class="secret-label" for="kimi-key">Kimi 国内站 API Key</label>
+      <div class="credential-heading"><strong>Kimi Coding Plan</strong><span>{kimiState?.configured ? "已配置" : "未配置"}</span></div>
+      <small class="field-note">使用 Kimi Code 控制台提供的 API Key；与 Moonshot 开放平台余额和 Key 独立。</small>
+      <label class="secret-label" for="kimi-key">Kimi Code API Key</label>
       <div class="secret-row">
         <input id="kimi-key" type="password" bind:value={kimiSecret} autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入后安全保存" />
-        <button class="compact-button primary" type="button" aria-label={`${kimiState?.configured ? "替换" : "保存"} Kimi 国内站 API Key`} disabled={providerIsBusy("kimi") || !kimiSecret.trim()} on:click={() => saveCredential({ provider: "kimi", region: "china" })}>{kimiState?.configured ? "替换" : "保存"}</button>
-        {#if kimiState?.configured}<button class="compact-button danger" type="button" aria-label="删除 Kimi 国内站 API Key" disabled={providerIsBusy("kimi")} on:click={() => deleteCredential({ provider: "kimi", region: "china" })}>删除</button>{/if}
+        <button class="compact-button primary" type="button" aria-label={`${kimiState?.configured ? "替换" : "保存"} Kimi Code API Key`} disabled={providerIsBusy("kimi") || !kimiSecret.trim()} on:click={() => saveCredential({ provider: "kimi" })}>{kimiState?.configured ? "替换" : "保存"}</button>
+        {#if kimiState?.configured}<button class="compact-button danger" type="button" aria-label="删除 Kimi Code API Key" disabled={providerIsBusy("kimi")} on:click={() => deleteCredential({ provider: "kimi" })}>删除</button>{/if}
       </div>
       <div class="connection-actions">
-        <button type="button" class="text-link" on:click={() => openProviderPortal("kimi")}>打开 Kimi 官方账户页</button>
+        <button type="button" class="text-link" on:click={() => openProviderPortal("kimi")}>打开 Kimi Code 官方页面</button>
       </div>
     </div>
   </section>
@@ -1007,8 +1031,7 @@
   .provider-heading,
   .credential-heading,
   .secret-row,
-  .connection-actions,
-  .balance-parts {
+  .connection-actions {
     display: flex;
     align-items: center;
   }
@@ -1073,15 +1096,6 @@
     border-top: 1px solid #edf1f4;
   }
 
-  .balance-parts {
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    margin: 9px 0 7px;
-    color: #64748b;
-    font-size: 0.68rem;
-  }
-
-  .balance-parts strong { color: #334155; font-size: 0.7rem; overflow-wrap: anywhere; }
   .balance-group .quota-heading strong, .quota-card > .quota-heading strong { min-width: 0; overflow-wrap: anywhere; text-align: right; }
   .provider-empty { padding: 8px 0 3px; white-space: normal !important; line-height: 1.45; }
 
@@ -1199,10 +1213,8 @@
   .credential-warning { margin: 0 0 12px; padding: 8px; border-radius: 7px; color: #9f2d20; background: #fff3f1; font-size: 0.68rem; }
   .secret-label { display: block; margin: 7px 0 5px; color: #475569; font-size: 0.65rem; font-weight: 650; }
   .secret-row { gap: 6px; }
-  .secret-row input, select { min-width: 0; min-height: 34px; border: 1px solid #c6d4da; border-radius: 8px; color: #253443; background: #fff; font-size: 0.71rem; }
+  .secret-row input { min-width: 0; min-height: 34px; border: 1px solid #c6d4da; border-radius: 8px; color: #253443; background: #fff; font-size: 0.71rem; }
   .secret-row input { flex: 1 1 auto; padding: 7px 9px; }
-  select { width: 100%; padding: 6px 9px; }
-  select:disabled { color: #475569; opacity: 1; }
   .compact-button { min-height: 34px; flex: 0 0 auto; padding: 6px 9px; border-radius: 8px; font-size: 0.67rem; font-weight: 650; }
   .compact-button.primary { border: 1px solid #0f766e; color: #fff; background: #0f766e; }
   .compact-button.danger { border: 1px solid #edc4be; color: #9f2d20; background: #fff8f7; }

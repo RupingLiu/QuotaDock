@@ -1,6 +1,6 @@
 # QuotaDock Product Spec（多供应商版）
 
-> 状态：v0.6.0 已实现基线
+> 状态：v0.6.1 已实现基线
 > 更新日期：2026-08-14
 
 ## 1. 产品定义
@@ -17,10 +17,10 @@ QuotaDock 是非官方、Windows 优先的本地额度与余额状态工具。�
 |---|---|---|
 | Codex | App Server 结构化 1 周额度、重置时间；PTY `/status` 降级 | OpenAI API 账单、组织账单 |
 | DeepSeek | API 开放平台总余额、赠金余额、充值余额，多币种 | 应用内充值、交易/发票历史 |
-| Kimi | 国内 API 开放平台人民币可用、现金、代金券余额 | 国际站、Kimi 会员、Kimi Code、Tier |
+| Kimi | Coding Plan 总额度与 Code 的 5 小时、7 天等官方返回窗口 | Moonshot API 余额、网页抓取、未文档化的 Kimi/Code 分项接口 |
 
-DeepSeek 和 Kimi 的零余额是有效数据；Kimi 现金余额允许为负。金额按官方精度字符串
-展示，不用二进制浮点数重新计算，Kimi 可用余额也不由现金与代金券自行推导。
+DeepSeek 的零余额是有效数据，金额按官方精度字符串展示。Kimi 的 used/limit 同样按
+整数字符串保存，通过整数运算计算剩余比例，不用二进制浮点数处理原始计数。
 
 ## 3. 核心体验
 
@@ -38,7 +38,10 @@ DeepSeek 和 Kimi 的零余额是有效数据；Kimi 现金余额允许为负。
 ### 3.2 详情与设置
 
 - 三张供应商卡独立显示 fresh、busy、error、stale 或 not-configured。
-- DeepSeek 展示每个币种的总额、充值和赠金；Kimi 展示国内站可用、现金、代金券。
+- DeepSeek 展示每个币种的总额、充值和赠金；Kimi 展示总量、全部 Code 时间窗口和重置时间。
+- 260×36 悬浮条中，Kimi 主值显示总剩余，副值只显示剩余最少的 Code 窗口；完整值留在详情页。
+- 顶层 `usage` 作为套餐总量展示，不假定固定月/周周期；周期由返回的重置时间表达。
+- DeepSeek 悬浮条中的“充值余额”可点击并打开固定官方充值页面。
 - 各家可单独刷新，“刷新全部”并行执行并允许部分成功。
 - 密码型输入只用于设置或替换 Key，提交后清空且永不回填；删除连接需要确认。
 - 删除连接会删除精确凭据并将该家移出轮播，轮播始终至少保留 Codex。
@@ -53,22 +56,22 @@ DeepSeek 和 Kimi 的零余额是有效数据；Kimi 现金余额允许为负。
 
 ## 4. 数据与一致性
 
-1. schema v5 以 `providers.codex/deepseek/kimi` 为事实源；v4 Codex 快照、趋势和设置无损迁移。
+1. schema v6 以 `providers.codex/deepseek/kimi` 为事实源；v4 Codex 数据无损迁移，v5 的错误 Kimi API 余额会被清除并要求重新配置 Kimi Code Key。
 2. 各供应商完成后即在短持锁区内原子保存并增加 revision，不等待最慢供应商。
 3. 前端只接受不低于当前 revision 的状态，避免旧加载或乱序事件覆盖新结果。
 4. 状态写入使用临时文件与原子替换；损坏/不兼容文件先原样备份再恢复。
-5. 余额只保存每家最新成功值；v0.6.0 不新增余额历史或低余额通知。
+5. 额度只保存每家最新成功值；v0.6.1 不新增供应商历史或低额度通知。
 6. Codex 趋势保存周额度百分比与时间，最多 672 个稀疏点，并与其他本地状态数据采用
    相同保护边界。
 
 ## 5. 安全与隐私
 
 - DeepSeek 只访问 `https://api.deepseek.com/user/balance`；Kimi 只访问
-  `https://api.moonshot.cn/v1/users/me/balance`。
+  `https://api.kimi.com/coding/v1/usages`。
 - HTTP 客户端使用 TLS、固定端点、系统代理、总/连接超时、64 KiB 响应体上限，并禁止重定向。
 - Bearer header 标记为敏感；上游错误正文、完整财务响应和 PTY 原文不写入状态、日志或前端。
 - API Key 仅由 Rust 后端按需从当前用户的 Windows Credential Manager 读取，固定服务名
-  `com.rupingliu.quotadock`，固定账户名区分 DeepSeek 与 Kimi 国内站。
+  `com.rupingliu.quotadock`，固定账户名区分 DeepSeek 与 Kimi Code。
 - 普通 JSON 以本地明文保存额度/余额快照、配置状态和轮播设置，但不保存认证凭据或
   API Key；前端永远不能读取已保存 Key。
 - 删除普通应用数据与删除 Windows 凭据是两个动作；当前卸载器不会替用户完成任一动作。
@@ -76,11 +79,11 @@ DeepSeek 和 Kimi 的零余额是有效数据；Kimi 现金余额允许为负。
 - 更新包必须通过 Ed25519 签名、内嵌 ProductVersion 和版本回放检查；无 Authenticode
   证书的现实限制必须继续披露。
 
-## 6. v0.6.0 验收标准
+## 6. v0.6.1 验收标准
 
-- v4→v5 迁移后 Codex 数据和 `260 × 36` 位置不丢失，新安装默认仅 Codex。
+- v5→v6 迁移后 Codex/DeepSeek 数据和 `260 × 36` 位置不丢失，错误的旧 Kimi API 余额不再展示。
 - 1/2/3 项轮播、8 秒、暂停、手动切换和 reduced-motion 行为通过自动化测试。
-- DeepSeek/Kimi fixture 覆盖零值、精度、缺字段、错误码、超大响应、超时和状态码分类。
+- Kimi fixture 覆盖总量、5 小时/7 天窗口、重置时间、大整数、缺字段和错误码。
 - Key 可设置、替换、检测、删除；测试不触碰真实 Credential Manager，状态/日志无 secret。
 - 三家并行、部分成功、完成即提交、per-provider 防重入和独立退避通过测试。
 - 全量前端测试/检查/构建、Rust fmt/check/test 与 `git diff --check` 通过。
@@ -88,7 +91,7 @@ DeepSeek 和 Kimi 的零余额是有效数据；Kimi 现金余额允许为负。
 
 ## 7. 明确不做
 
-- Kimi 国际站、Kimi 会员或 Kimi Code 额度。
+- 未文档化的 Kimi 与 Code 顶部总量分段、Kimi 网页/App 月额度抓取。
 - 充值订单、支付、发票、退款、交易历史或网页抓取。
-- 余额趋势、消费预测、余额通知、Kimi Tier 或限流头推断。
+- 余额趋势、消费预测、余额通知或限流头推断。
 - 多账号、自定义代理/API base URL、macOS Keychain 或 Linux Secret Service 正式支持。

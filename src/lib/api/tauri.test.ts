@@ -104,40 +104,28 @@ describe("browser preview provider refresh fixtures", () => {
 });
 
 describe("browser preview credential boundary", () => {
-  it("uses the same DeepSeek and Kimi China targets as the Rust commands", async () => {
+  it("keeps DeepSeek and Kimi Code credentials independent", async () => {
     await expect(
       tauriApi.setProviderCredential({ provider: "deepseek" }, "preview-secret"),
     ).resolves.toEqual({
       providerId: "deepseek",
-      region: null,
       availability: "configured",
     });
     await expect(
-      tauriApi.deleteProviderCredential({ provider: "kimi", region: "china" }),
+      tauriApi.deleteProviderCredential({ provider: "kimi" }),
     ).resolves.toEqual({
       providerId: "kimi",
-      region: "china",
       availability: "not-configured",
     });
     await expect(tauriApi.getProviderCredentialStatus()).resolves.toEqual([
       {
         providerId: "deepseek",
-        region: null,
         availability: "not-configured",
       },
       {
         providerId: "kimi",
-        region: "china",
         availability: "not-configured",
       },
     ]);
-  });
-
-  it("rejects a runtime attempt to omit the Kimi China region", () => {
-    const unsupported = { provider: "kimi" } as unknown as CredentialTarget;
-
-    expect(() =>
-      tauriApi.deleteProviderCredential(unsupported),
-    ).toThrow("首版只支持 DeepSeek 和 Kimi 国内站凭据。");
   });
 });

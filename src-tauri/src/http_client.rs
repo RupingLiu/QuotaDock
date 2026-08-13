@@ -14,14 +14,14 @@ const USER_AGENT: &str = concat!("QuotaDock/", env!("CARGO_PKG_VERSION"));
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OfficialEndpoint {
     DeepSeekBalance,
-    KimiBalance,
+    KimiCodingUsage,
 }
 
 impl OfficialEndpoint {
     pub const fn url(self) -> &'static str {
         match self {
             Self::DeepSeekBalance => "https://api.deepseek.com/user/balance",
-            Self::KimiBalance => "https://api.moonshot.cn/v1/users/me/balance",
+            Self::KimiCodingUsage => "https://api.kimi.com/coding/v1/usages",
         }
     }
 }
@@ -314,18 +314,18 @@ mod tests {
             "https://api.deepseek.com/user/balance"
         );
         assert_eq!(
-            OfficialEndpoint::KimiBalance.url(),
-            "https://api.moonshot.cn/v1/users/me/balance"
+            OfficialEndpoint::KimiCodingUsage.url(),
+            "https://api.kimi.com/coding/v1/usages"
         );
         for endpoint in [
             OfficialEndpoint::DeepSeekBalance,
-            OfficialEndpoint::KimiBalance,
+            OfficialEndpoint::KimiCodingUsage,
         ] {
             let url = reqwest::Url::parse(endpoint.url()).unwrap();
             assert_eq!(url.scheme(), "https");
             assert!(matches!(
                 url.host_str(),
-                Some("api.deepseek.com" | "api.moonshot.cn")
+                Some("api.deepseek.com" | "api.kimi.com")
             ));
         }
     }
