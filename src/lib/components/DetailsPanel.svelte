@@ -4,15 +4,24 @@
   import type {
     AppDiagnostics,
     AppState,
+    CredentialTarget,
+    DeepSeekSnapshot,
+    KimiSnapshot,
+    ProviderId,
+    ProviderState,
     SettingsPatch,
     UpdateStatus,
     UsageHistoryPoint,
   } from "$lib/types/usage";
   import {
+    capturedAtToEpochMs,
     formatCapturedAt,
+    formatBalance,
     formatPercent,
     formatReset,
     progressValue,
+    providerErrorLabel,
+    providerHealthLabel,
     sourceLabel,
     storageLabel,
   } from "$lib/utils/format";
@@ -22,26 +31,49 @@
   export let refreshing = false;
   export let errorMessage: string | null = null;
   export let noticeMessage: string | null = null;
+  export let providerAnnouncement: string | null = null;
   export let onRefresh: () => void | Promise<void> = () => {};
   export let onStateChange: (state: AppState) => void = () => {};
 
   let diagnostics: AppDiagnostics | null = null;
   let actionError: string | null = null;
+  let actionMessage: string | null = null;
+  let localProviderAnnouncement: string | null = null;
   let savingSetting: string | null = null;
   let startupEnabled = false;
   let updateStatus: UpdateStatus | null = null;
   let updateStatusRevision = 0;
+  let deepseekSecret = "";
+  let kimiSecret = "";
+  let providerActions = new Set<ProviderId>();
+  let credentialStoreUnavailable = false;
+  let nowMs = Date.now();
 
-  $: snapshot = appState?.latestSnapshot ?? null;
+  $: codexState = appState?.providers.codex ?? null;
+  $: deepseekState = appState?.providers.deepseek ?? null;
+  $: kimiState = appState?.providers.kimi ?? null;
+  $: snapshot = codexSnapshot(codexState);
+  $: deepseek = deepSeekSnapshot(deepseekState);
+  $: kimi = kimiSnapshot(kimiState);
   $: history = appState?.history ?? [];
   $: weeklyPath = sparklinePath(history);
+  $: codexBusy = providerActions.has("codex") || Boolean(refreshing && codexState?.configured);
+  $: deepseekBusy = providerActions.has("deepseek") || Boolean(refreshing && deepseekState?.configured);
+  $: kimiBusy = providerActions.has("kimi") || Boolean(refreshing && kimiState?.configured);
+  $: codexDisplayHealth = deriveProviderHealth(codexState, nowMs, codexBusy);
+  $: deepseekDisplayHealth = deriveProviderHealth(deepseekState, nowMs, deepseekBusy);
+  $: kimiDisplayHealth = deriveProviderHealth(kimiState, nowMs, kimiBusy);
+  $: effectiveProviderAnnouncement = providerAnnouncement ?? localProviderAnnouncement;
   $: statusText =
     actionError ??
     errorMessage ??
-    (refreshing ? "正在从 Codex 读取额度…" : null) ??
+    (refreshing ? "正在刷新全部供应商…" : null) ??
+    actionMessage ??
     noticeMessage ??
     appState?.statusMessage ??
     "等待首次额度更新。";
+  $: providerLiveText =
+    effectiveProviderAnnouncement === statusText ? "" : (effectiveProviderAnnouncement ?? "");
   $: updateBusy =
     updateStatus?.phase === "checking" ||
     updateStatus?.phase === "downloading" ||
@@ -50,7 +82,11 @@
   onMount(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    const clock = window.setInterval(() => {
+      nowMs = Date.now();
+    }, 30_000);
     void loadDiagnostics();
+    void loadCredentialStatuses();
     void (async () => {
       try {
         const stopListening = await tauriApi.onUpdateStatus((status) => {
@@ -74,6 +110,7 @@
     })();
     return () => {
       disposed = true;
+      window.clearInterval(clock);
       unlisten?.();
     };
   });
@@ -85,6 +122,152 @@
     } catch (error) {
       actionError = errorText(error);
     }
+  }
+
+  async function loadCredentialStatuses(): Promise<void> {
+    try {
+      const statuses = await tauriApi.getProviderCredentialStatus();
+      credentialStoreUnavailable = statuses.some(
+        (status) => status.availability === "unavailable",
+      );
+      onStateChange(await tauriApi.getAppState());
+    } catch (error) {
+      actionError = errorText(error);
+    }
+  }
+
+  async function refreshProvider(provider: ProviderId): Promise<void> {
+    actionError = null;
+    actionMessage = null;
+    localProviderAnnouncement = null;
+    setProviderAction(provider, true);
+    try {
+      const result = await tauriApi.refreshProvider(provider);
+      onStateChange(result.appState);
+      const item = result.providerResults[0];
+      localProviderAnnouncement = item?.message ?? result.message;
+    } catch (error) {
+      actionError = errorText(error);
+      localProviderAnnouncement = actionError;
+    } finally {
+      setProviderAction(provider, false);
+    }
+  }
+
+  async function saveCredential(target: CredentialTarget): Promise<void> {
+    const provider = target.provider;
+    const secret = provider === "deepseek" ? deepseekSecret.trim() : kimiSecret.trim();
+    if (!secret) {
+      actionError = "请输入 API Key。";
+      return;
+    }
+    if (provider === "deepseek") deepseekSecret = "";
+    else kimiSecret = "";
+    actionError = null;
+    actionMessage = null;
+    setProviderAction(provider, true);
+    try {
+      await tauriApi.setProviderCredential(target, secret);
+      onStateChange(await tauriApi.getAppState());
+      actionMessage = `${provider === "deepseek" ? "DeepSeek" : "Kimi"} 连接凭据已保存。`;
+    } catch (error) {
+      actionError = errorText(error);
+    } finally {
+      setProviderAction(provider, false);
+      if (provider === "deepseek") deepseekSecret = "";
+      else kimiSecret = "";
+    }
+  }
+
+  async function deleteCredential(target: CredentialTarget): Promise<void> {
+    const name = target.provider === "deepseek" ? "DeepSeek" : "Kimi";
+    if (!window.confirm(`删除 ${name} API Key？删除后该供应商会退出悬浮条轮播。`)) return;
+    actionError = null;
+    actionMessage = null;
+    setProviderAction(target.provider, true);
+    try {
+      await tauriApi.deleteProviderCredential(target);
+      onStateChange(await tauriApi.getAppState());
+      actionMessage = `${name} 连接凭据已删除。`;
+    } catch (error) {
+      actionError = errorText(error);
+    } finally {
+      setProviderAction(target.provider, false);
+      if (target.provider === "deepseek") deepseekSecret = "";
+      else kimiSecret = "";
+    }
+  }
+
+  function toggleFloatingProvider(provider: ProviderId, checked: boolean): void {
+    const selected = appState?.settings.floatingProviderIds ?? ["codex"];
+    const next = checked
+      ? [...selected, provider]
+      : selected.filter((item) => item !== provider);
+    void saveSettings({ floatingProviderIds: next }, `floating-${provider}`);
+  }
+
+  function isLastFloatingProvider(provider: ProviderId): boolean {
+    const selected = appState?.settings.floatingProviderIds ?? ["codex"];
+    return selected.includes(provider) && selected.length === 1;
+  }
+
+  async function openProviderPortal(provider: ProviderId): Promise<void> {
+    try {
+      await tauriApi.openProviderPortal(provider);
+    } catch (error) {
+      actionError = errorText(error);
+    }
+  }
+
+  function codexSnapshot(state: ProviderState | null) {
+    return state?.latestSnapshot?.provider === "codex" ? state.latestSnapshot.data : null;
+  }
+
+  function deepSeekSnapshot(state: ProviderState | null): DeepSeekSnapshot | null {
+    return state?.latestSnapshot?.provider === "deepseek" ? state.latestSnapshot.data : null;
+  }
+
+  function kimiSnapshot(state: ProviderState | null): KimiSnapshot | null {
+    return state?.latestSnapshot?.provider === "kimi" ? state.latestSnapshot.data : null;
+  }
+
+  function providerStateCopy(health: ProviderState["health"], state: ProviderState | null): string {
+    if (!state) return "正在读取";
+    return health === "error"
+      ? providerErrorLabel(state.errorCategory) ?? providerHealthLabel(health)
+      : providerHealthLabel(health);
+  }
+
+  function providerBusy(provider: ProviderId): boolean {
+    return providerActions.has(provider);
+  }
+
+  function providerIsBusy(provider: ProviderId): boolean {
+    if (provider === "codex") return codexBusy;
+    if (provider === "deepseek") return deepseekBusy;
+    return kimiBusy;
+  }
+
+  function deriveProviderHealth(
+    state: ProviderState | null,
+    currentTimeMs: number,
+    busy: boolean,
+  ): ProviderState["health"] {
+    if (busy) return "refreshing";
+    if (!state) return "idle";
+    if (state.health === "error" || state.errorCategory) return "error";
+    const capturedAtMs = capturedAtToEpochMs(state.latestSnapshot?.data.capturedAt);
+    if (capturedAtMs !== null) {
+      const age = currentTimeMs - capturedAtMs;
+      if (age > 10 * 60_000 || age < -5 * 60_000) return "stale";
+    }
+    return state.health;
+  }
+
+  function setProviderAction(provider: ProviderId, active: boolean): void {
+    providerActions = new Set(providerActions);
+    if (active) providerActions.add(provider);
+    else providerActions.delete(provider);
   }
 
   async function checkUpdates(): Promise<void> {
@@ -133,10 +316,12 @@
 
   async function saveSettings(patch: SettingsPatch, key: string): Promise<void> {
     actionError = null;
+    actionMessage = null;
     savingSetting = key;
     try {
       const next = await tauriApi.updateSettings(patch);
       onStateChange(next);
+      actionMessage = "设置已保存。";
     } catch (error) {
       actionError = errorText(error);
     } finally {
@@ -174,14 +359,6 @@
   async function closeDetails(): Promise<void> {
     try {
       await tauriApi.hideDetails();
-    } catch (error) {
-      actionError = errorText(error);
-    }
-  }
-
-  async function openOfficialUsage(): Promise<void> {
-    try {
-      await tauriApi.openOfficialUsage();
     } catch (error) {
       actionError = errorText(error);
     }
@@ -256,8 +433,8 @@
       <button
         class="icon-button"
         type="button"
-        aria-label="刷新额度"
-        title="刷新额度"
+        aria-label="刷新全部供应商"
+        title="刷新全部供应商"
         disabled={refreshing}
         on:click={() => onRefresh()}
       >
@@ -283,6 +460,9 @@
     <span class="status-dot" aria-hidden="true"></span>
     <span>{statusText}</span>
   </section>
+  <span class="sr-only" data-testid="provider-announcement" role="status" aria-live="polite" aria-atomic="true">
+    {providerLiveText}
+  </span>
 
   {#if appState?.recoveryNotice}
     <section class="recovery-card" aria-label="存储恢复提示">
@@ -301,22 +481,57 @@
     </section>
   {/if}
 
-  <section class="quota-grid" aria-label="额度概览">
-    <article class:low={(snapshot?.weekly.remainingPercent ?? 101) <= 20} class="quota-card">
-      <div class="quota-heading">
-        <span>1 周额度</span>
-        <strong>{formatPercent(snapshot?.weekly.remainingPercent ?? null)}</strong>
+  <section class="quota-grid" aria-label="供应商额度概览">
+    <article data-provider="codex" class:low={(snapshot?.weekly.remainingPercent ?? 101) <= 20} class="quota-card" aria-busy={codexDisplayHealth === "refreshing"}>
+      <div class="provider-heading">
+        <div><span class="provider-name">Codex</span><span class="provider-status" data-health={codexDisplayHealth}>{providerStateCopy(codexDisplayHealth, codexState)}</span></div>
+        <button class="card-action" type="button" aria-label="刷新 Codex" disabled={providerIsBusy("codex")} on:click={() => refreshProvider("codex")}>刷新</button>
       </div>
-      <div class="progress-track" aria-hidden="true">
-        <span style={`width: ${progressValue(snapshot?.weekly.remainingPercent ?? null)}%`}></span>
-      </div>
+      <div class="quota-heading"><span>1 周额度</span><strong>{formatPercent(snapshot?.weekly.remainingPercent ?? null)}</strong></div>
+      <div class="progress-track" aria-hidden="true"><span style={`width: ${progressValue(snapshot?.weekly.remainingPercent ?? null)}%`}></span></div>
       <p>重置：{snapshot ? formatReset(snapshot.weekly, { capturedAt: snapshot.capturedAt }) : "--"}</p>
+      <p>上次成功：{formatCapturedAt(snapshot?.capturedAt)}</p>
+    </article>
+
+    <article data-provider="deepseek" class="quota-card" aria-busy={deepseekDisplayHealth === "refreshing"}>
+      <div class="provider-heading">
+        <div><span class="provider-name">DeepSeek</span><span class="provider-status" data-health={deepseekDisplayHealth}>{providerStateCopy(deepseekDisplayHealth, deepseekState)}</span></div>
+        <button class="card-action" type="button" aria-label="刷新 DeepSeek" disabled={!deepseekState?.configured || providerIsBusy("deepseek")} on:click={() => refreshProvider("deepseek")}>刷新</button>
+      </div>
+      {#if deepseek}
+        {#each deepseek.balances as balance (balance.currency)}
+          <div class="balance-group">
+            <div class="quota-heading"><span>{balance.currency} 充值余额</span><strong>{formatBalance(balance.toppedUpBalance, balance.currency)}</strong></div>
+            <p
+              class="balance-detail"
+              title={`总额 ${formatBalance(balance.totalBalance, balance.currency)} · 赠金 ${formatBalance(balance.grantedBalance, balance.currency)}`}
+            >总额 {formatBalance(balance.totalBalance, balance.currency)} · 赠金 {formatBalance(balance.grantedBalance, balance.currency)}</p>
+          </div>
+        {/each}
+        <p>账户余额接口：{deepseek.isAvailable ? "可用" : "不可用"} · {formatCapturedAt(deepseek.capturedAt)}</p>
+      {:else}
+        <p class="provider-empty">{deepseekState?.configured ? "等待首次余额更新。" : "配置 API Key 后可查询充值余额。"}</p>
+      {/if}
+    </article>
+
+    <article data-provider="kimi" class="quota-card" aria-busy={kimiDisplayHealth === "refreshing"}>
+      <div class="provider-heading">
+        <div><span class="provider-name">Kimi</span><span class="provider-status" data-health={kimiDisplayHealth}>{providerStateCopy(kimiDisplayHealth, kimiState)}</span></div>
+        <button class="card-action" type="button" aria-label="刷新 Kimi" disabled={!kimiState?.configured || providerIsBusy("kimi")} on:click={() => refreshProvider("kimi")}>刷新</button>
+      </div>
+      {#if kimi}
+        <div class="quota-heading"><span>可用余额</span><strong>{formatBalance(kimi.availableBalance, kimi.currency)}</strong></div>
+        <div class="balance-parts"><span>现金 <strong>{formatBalance(kimi.cashBalance, kimi.currency)}</strong></span><span>代金券 <strong>{formatBalance(kimi.voucherBalance, kimi.currency)}</strong></span></div>
+        <p>区域：中国站 · {formatCapturedAt(kimi.capturedAt)}</p>
+      {:else}
+        <p class="provider-empty">{kimiState?.configured ? "等待首次余额更新。" : "配置国内站 API Key 后可查询余额。"}</p>
+      {/if}
     </article>
   </section>
 
   <section class="meta-row" aria-label="数据状态">
-    <div><span>来源</span><strong>{sourceLabel(snapshot?.source)}</strong></div>
-    <div><span>上次成功</span><strong>{formatCapturedAt(snapshot?.capturedAt)}</strong></div>
+    <div><span>Codex 来源</span><strong>{sourceLabel(snapshot?.source)}</strong></div>
+    <div><span>轮播项目</span><strong>{appState?.settings.floatingProviderIds.length ?? 1} 家</strong></div>
     <div><span>存储</span><strong>{storageLabel(appState?.storageStatus)}</strong></div>
   </section>
 
@@ -412,6 +627,65 @@
     {/if}
   </section>
 
+  <section class="panel connections-panel" aria-labelledby="connections-heading">
+    <div class="section-heading">
+      <div><p class="section-kicker">PROVIDERS</p><h2 id="connections-heading">供应商连接</h2></div>
+      <span class="security-badge">Windows 凭据</span>
+    </div>
+    {#if credentialStoreUnavailable}
+      <p class="credential-warning" role="alert">Windows 凭据存储当前不可用，已保存的 Key 不会回显。</p>
+    {/if}
+
+    <div class="credential-block">
+      <div class="credential-heading"><strong>DeepSeek API</strong><span>{deepseekState?.configured ? "已配置" : "未配置"}</span></div>
+      <label class="secret-label" for="deepseek-key">DeepSeek API Key</label>
+      <div class="secret-row">
+        <input id="deepseek-key" type="password" bind:value={deepseekSecret} autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入后安全保存" />
+        <button class="compact-button primary" type="button" aria-label={`${deepseekState?.configured ? "替换" : "保存"} DeepSeek API Key`} disabled={providerIsBusy("deepseek") || !deepseekSecret.trim()} on:click={() => saveCredential({ provider: "deepseek" })}>{deepseekState?.configured ? "替换" : "保存"}</button>
+        {#if deepseekState?.configured}<button class="compact-button danger" type="button" aria-label="删除 DeepSeek API Key" disabled={providerIsBusy("deepseek")} on:click={() => deleteCredential({ provider: "deepseek" })}>删除</button>{/if}
+      </div>
+      <div class="connection-actions">
+        <button type="button" class="text-link" on:click={() => openProviderPortal("deepseek")}>打开官方余额/充值页</button>
+      </div>
+    </div>
+
+    <div class="credential-block">
+      <div class="credential-heading"><strong>Kimi API</strong><span>{kimiState?.configured ? "已配置 · 国内站" : "未配置"}</span></div>
+      <label class="secret-label" for="kimi-region">区域</label>
+      <select id="kimi-region" disabled aria-describedby="kimi-region-note"><option>中国站（人民币）</option></select>
+      <small id="kimi-region-note" class="field-note">首版仅支持国内 API 开放平台；与 Kimi 会员、Kimi Code 不互通。</small>
+      <label class="secret-label" for="kimi-key">Kimi 国内站 API Key</label>
+      <div class="secret-row">
+        <input id="kimi-key" type="password" bind:value={kimiSecret} autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入后安全保存" />
+        <button class="compact-button primary" type="button" aria-label={`${kimiState?.configured ? "替换" : "保存"} Kimi 国内站 API Key`} disabled={providerIsBusy("kimi") || !kimiSecret.trim()} on:click={() => saveCredential({ provider: "kimi", region: "china" })}>{kimiState?.configured ? "替换" : "保存"}</button>
+        {#if kimiState?.configured}<button class="compact-button danger" type="button" aria-label="删除 Kimi 国内站 API Key" disabled={providerIsBusy("kimi")} on:click={() => deleteCredential({ provider: "kimi", region: "china" })}>删除</button>{/if}
+      </div>
+      <div class="connection-actions">
+        <button type="button" class="text-link" on:click={() => openProviderPortal("kimi")}>打开 Kimi 官方账户页</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel rotation-panel" aria-labelledby="rotation-heading">
+    <div class="section-heading">
+      <div><p class="section-kicker">FLOATING BAR</p><h2 id="rotation-heading">悬浮条轮播</h2></div>
+      <span>{appState?.settings.floatingProviderIds.length ?? 1} 项 · 每 8 秒</span>
+    </div>
+    {#each (["codex", "deepseek", "kimi"] as ProviderId[]) as provider}
+      <label class="setting-row">
+        <span><strong>{provider === "codex" ? "Codex" : provider === "deepseek" ? "DeepSeek" : "Kimi"}</strong><small>{provider === "codex" || appState?.providers[provider].configured ? "加入固定顺序轮播" : "请先配置 API Key"}</small></span>
+        <input
+          type="checkbox"
+          aria-label={`将 ${provider === "codex" ? "Codex" : provider === "deepseek" ? "DeepSeek" : "Kimi"} 加入悬浮条轮播`}
+          checked={appState?.settings.floatingProviderIds.includes(provider) ?? provider === "codex"}
+          disabled={savingSetting !== null || (!appState?.providers[provider].configured) || isLastFloatingProvider(provider)}
+          on:change={(event) => toggleFloatingProvider(provider, event.currentTarget.checked)}
+        />
+      </label>
+    {/each}
+    <p class="rotation-note">悬停、键盘焦点或页面隐藏时暂停；减少动态效果时仅支持手动切换。</p>
+  </section>
+
   <section class="panel settings-panel">
     <div class="section-heading">
       <div>
@@ -488,7 +762,7 @@
         <dd class="path" title={diagnostics?.storagePath ?? ""}>{diagnostics?.storagePath ?? "--"}</dd>
       </div>
     </dl>
-    <button class="official-link" type="button" on:click={openOfficialUsage}>
+    <button class="official-link" type="button" on:click={() => openProviderPortal("codex")}>
       打开 Codex 官方 Usage Dashboard
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M14 5h5v5M19 5l-8 8M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"></path>
@@ -526,7 +800,8 @@
   }
 
   :global(button),
-  :global(input) {
+  :global(input),
+  :global(select) {
     font: inherit;
   }
 
@@ -729,6 +1004,87 @@
     border-radius: 12px;
   }
 
+  .provider-heading,
+  .credential-heading,
+  .secret-row,
+  .connection-actions,
+  .balance-parts {
+    display: flex;
+    align-items: center;
+  }
+
+  .provider-heading,
+  .credential-heading {
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .provider-heading > div {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .provider-name {
+    color: #253443;
+    font-size: 0.83rem;
+    font-weight: 700;
+  }
+
+  .provider-status {
+    padding: 3px 6px;
+    border-radius: 99px;
+    color: #475569;
+    background: #edf2f5;
+    font-size: 0.59rem;
+    font-weight: 650;
+  }
+
+  .provider-status[data-health="fresh"] { color: #0f6b63; background: #e5f5f2; }
+  .provider-status[data-health="refreshing"] { color: #1d4ed8; background: #eaf1ff; }
+  .provider-status[data-health="error"] { color: #9f2d20; background: #fff0ee; }
+  .provider-status[data-health="stale"] { color: #92400e; background: #fff4e5; }
+
+  .card-action,
+  .compact-button,
+  .text-link {
+    cursor: pointer;
+  }
+
+  .card-action {
+    min-height: 27px;
+    padding: 4px 8px;
+    border: 1px solid #c6d4da;
+    border-radius: 7px;
+    color: #475569;
+    background: #fff;
+    font-size: 0.64rem;
+    font-weight: 650;
+  }
+
+  .card-action:hover:not(:disabled) { color: #0f6b63; border-color: #86b9b3; }
+  .card-action:disabled, .compact-button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+  .balance-group + .balance-group {
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 1px solid #edf1f4;
+  }
+
+  .balance-parts {
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 9px 0 7px;
+    color: #64748b;
+    font-size: 0.68rem;
+  }
+
+  .balance-parts strong { color: #334155; font-size: 0.7rem; overflow-wrap: anywhere; }
+  .balance-group .quota-heading strong, .quota-card > .quota-heading strong { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+  .provider-empty { padding: 8px 0 3px; white-space: normal !important; line-height: 1.45; }
+
   .quota-heading {
     justify-content: space-between;
     gap: 8px;
@@ -824,6 +1180,37 @@
     padding: 14px;
     border-radius: 13px;
   }
+
+  .quota-card .balance-detail {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .credential-block + .credential-block {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid #e7edf0;
+  }
+
+  .credential-heading strong { color: #253443; font-size: 0.78rem; }
+  .credential-heading span { color: #64748b; font-size: 0.65rem; }
+  .credential-warning { margin: 0 0 12px; padding: 8px; border-radius: 7px; color: #9f2d20; background: #fff3f1; font-size: 0.68rem; }
+  .secret-label { display: block; margin: 7px 0 5px; color: #475569; font-size: 0.65rem; font-weight: 650; }
+  .secret-row { gap: 6px; }
+  .secret-row input, select { min-width: 0; min-height: 34px; border: 1px solid #c6d4da; border-radius: 8px; color: #253443; background: #fff; font-size: 0.71rem; }
+  .secret-row input { flex: 1 1 auto; padding: 7px 9px; }
+  select { width: 100%; padding: 6px 9px; }
+  select:disabled { color: #475569; opacity: 1; }
+  .compact-button { min-height: 34px; flex: 0 0 auto; padding: 6px 9px; border-radius: 8px; font-size: 0.67rem; font-weight: 650; }
+  .compact-button.primary { border: 1px solid #0f766e; color: #fff; background: #0f766e; }
+  .compact-button.danger { border: 1px solid #edc4be; color: #9f2d20; background: #fff8f7; }
+  .field-note, .rotation-note { display: block; margin-top: 6px; color: #64748b; font-size: 0.63rem; line-height: 1.4; }
+  .connection-actions { justify-content: flex-end; margin-top: 7px; }
+  .text-link { padding: 3px 0; border: 0; color: #0f6b63; background: transparent; font-size: 0.65rem; font-weight: 650; }
+  .text-link:hover { text-decoration: underline; }
+  .rotation-note { margin-bottom: 0; }
 
   .section-heading {
     justify-content: space-between;
@@ -1165,5 +1552,17 @@
       animation: none !important;
       transition: none !important;
     }
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

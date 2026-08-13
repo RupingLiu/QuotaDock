@@ -7,7 +7,7 @@
 
 ## Design Principles
 
-1. Percentage is the primary visual signal; label and reset time are secondary.
+1. The active provider's primary balance/quota is the primary visual signal; label and context are secondary.
 2. Always show whether data is fresh, stale, incomplete, loading, or failed.
 3. Preserve the last successful values after failure, but never present them as live.
 4. Keep the strip useful without hover. Tooltips may add detail, not carry essential state.
@@ -16,15 +16,17 @@
 ## Layout
 
 ```text
-[state]  1周 46% 6/23 09:00  [3m] [...]
+[state] [Codex] 46% 6/23 09:00 [3m] [...]
+[state] [DeepSeek] ¥100.00 充值余额 [3m] [...]
+[state] [Kimi] ¥49.59 可用余额 [3m] [...]
 ```
 
 - Default size: `260 × 36px`; minimum supported width: `240px`.
-- Grid: status dot, weekly quota group, freshness, menu button.
+- Grid: status dot, active provider group, freshness, menu button.
 - Outer padding: `8px` horizontal, `3px` vertical.
 - Menu hit target: `24 × 24px`.
 - At the `240px` compatibility width, truncate reset text only after preserving the percentage, freshness/error state, and menu.
-- The full non-interactive surface remains draggable; the menu button is not a drag target.
+- The full non-interactive surface remains draggable; provider label and menu button are not drag targets.
 
 ## Color Tokens
 
@@ -59,17 +61,26 @@ warning color and a literal `!`, not orange alone.
 - Hover transitions are `150–200ms` and never change layout dimensions.
 - Focus uses a visible `2px` outline.
 - Busy state may pulse only the status dot; disable it under `prefers-reduced-motion`.
-- Dynamic announcements use a polite live region.
+- The selected providers use fixed order Codex → DeepSeek → Kimi and rotate every 8 seconds.
+- One selected item never creates a timer. Hover, focus-within, and a hidden page pause rotation;
+  resuming waits a complete 8 seconds rather than catching up.
+- The provider label is a focused button for manual next-item navigation. Enter/Space use native
+  button behavior. Reduced motion disables automatic rotation but retains manual switching.
+- Automatic rotation is not written to the polite live region. Real refresh notices and errors are.
 
 ## Details Panel
 
 - The panel is an explanation and control surface, not a second always-on dashboard.
 - Use a calm off-white canvas, white cards, teal trust/accent color, and a single-column
   reading order suitable for a fixed `440 × 600px` Windows window.
-- Reading order: current status → recovery alert → weekly quota card → provenance metadata
-  → optional account summary → small trend → settings → diagnostics/official link.
+- Reading order: current status → recovery alert → three provider cards → provenance metadata
+  → Codex account/trend → provider connections → rotation settings → behavior settings → diagnostics.
 - The quota card uses percent, progress, and reset time. The small trend shows one clearly
   labeled weekly series and never invents forecasts.
+- DeepSeek shows every returned currency and preserves amount strings. Kimi shows available,
+  cash, voucher, region, and currency; zero and negative values are valid data.
+- Credential inputs are password fields and are cleared after save/failure. Only configuration
+  status reaches the UI; secrets are never refilled. Deletion requires confirmation.
 - Settings use native semantic checkboxes styled as compact switches; every row includes
   a one-line consequence description.
 - Long filesystem paths are truncated visually but retained in `title` for inspection.
@@ -104,10 +115,11 @@ Countdown values are derived from `capturedAt + resetCountdownSeconds`, refreshe
 ## Delivery Checklist
 
 - [ ] 260×36 and 240×36 have no horizontal/vertical overflow.
-- [ ] Percentage, state, and menu remain visible at the narrow breakpoint.
+- [ ] Primary value, state, and menu remain visible at the narrow breakpoint; long values ellipsize.
 - [ ] Light and dark themes maintain readable contrast.
 - [ ] Fresh, busy, stale, error, partial, empty, and low-quota states are distinct.
 - [ ] Menu is keyboard reachable and has a visible focus ring.
-- [ ] Live state changes are announced.
+- [ ] Refresh/error state changes are announced; automatic rotation is silent.
+- [ ] 1/2/3 item selection, 8-second timing, hover/focus/hidden pause, and manual next are tested.
 - [ ] `prefers-reduced-motion` is respected.
 - [ ] Hover/focus never moves neighboring content.

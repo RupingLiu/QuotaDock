@@ -3,6 +3,7 @@ import { tauriApi } from "$lib/api/tauri";
 import type {
   AppState,
   QuotaSnapshot,
+  RefreshProvidersResult,
   RefreshUsageResult,
 } from "$lib/types/usage";
 import { capturedAtToEpochMs } from "$lib/utils/format";
@@ -16,6 +17,7 @@ export class UsageState {
   refreshing = $state(false);
   errorMessage = $state<string | null>(null);
   noticeMessage = $state<string | null>(null);
+  providerAnnouncement = $state<string | null>(null);
   private lastForegroundRefreshStartedAt = 0;
 
   constructor(private readonly api: QuotaDockApi = tauriApi) {}
@@ -27,8 +29,10 @@ export class UsageState {
   async load(): Promise<void> {
     await this.capture(async () => {
       this.loading = true;
-      this.appState = await this.api.getAppState();
-      this.noticeMessage = this.appState.statusMessage;
+      const appState = await this.api.getAppState();
+      if (this.applyAppState(appState)) {
+        this.noticeMessage = appState.statusMessage;
+      }
     }).finally(() => {
       this.loading = false;
     });
@@ -44,11 +48,25 @@ export class UsageState {
     });
   }
 
+  async refreshProviders(): Promise<void> {
+    await this.capture(async () => {
+      this.refreshing = true;
+      try {
+        this.applyProviderResult(await this.api.refreshProviders());
+      } catch (error) {
+        this.providerAnnouncement = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    }).finally(() => {
+      this.refreshing = false;
+    });
+  }
+
   async refreshIfStale(maxAgeMs = FOREGROUND_REFRESH_MAX_AGE_MS): Promise<void> {
     const nowMs = Date.now();
     if (
       !shouldRefreshOnForeground(
-        this.activeSnapshot,
+        this.appState,
         nowMs,
         maxAgeMs,
         this.lastForegroundRefreshStartedAt,
@@ -59,11 +77,11 @@ export class UsageState {
     }
 
     this.lastForegroundRefreshStartedAt = nowMs;
-    await this.refreshUsage();
+    await this.refreshProviders();
   }
 
   applyRefreshResult(result: RefreshUsageResult): void {
-    this.appState = result.appState;
+    if (!this.applyAppState(result.appState)) return;
     if (result.updated) {
       this.errorMessage = null;
       this.noticeMessage = result.message;
@@ -71,6 +89,31 @@ export class UsageState {
       this.errorMessage = result.message;
       this.noticeMessage = null;
     }
+  }
+
+  applyProviderResult(result: RefreshProvidersResult): void {
+    if (!this.applyAppState(result.appState)) return;
+    this.providerAnnouncement =
+      result.providerResults.length === 1
+        ? result.providerResults[0]?.message ?? result.message
+        : result.message;
+    const codex = result.providerResults.find(
+      (providerResult) => providerResult.providerId === "codex",
+    );
+    if (!codex) return;
+    if (codex.outcome === "failed") {
+      this.errorMessage = codex.message;
+      this.noticeMessage = result.anyUpdated ? result.message : null;
+    } else {
+      this.errorMessage = null;
+      this.noticeMessage = result.message;
+    }
+  }
+
+  applyAppState(next: AppState): boolean {
+    if (this.appState && next.revision < this.appState.revision) return false;
+    this.appState = next;
+    return true;
   }
 
   private async capture(work: () => Promise<void>): Promise<void> {
@@ -88,7 +131,7 @@ export function createUsageState(api?: QuotaDockApi): UsageState {
 }
 
 export function shouldRefreshOnForeground(
-  snapshot: QuotaSnapshot | null,
+  state: AppState | QuotaSnapshot | null,
   nowMs: number,
   maxAgeMs = FOREGROUND_REFRESH_MAX_AGE_MS,
   lastRefreshStartedAtMs = 0,
@@ -103,7 +146,15 @@ export function shouldRefreshOnForeground(
   ) {
     return false;
   }
-  return isSnapshotStale(snapshot, nowMs, maxAgeMs);
+  if (state && "providers" in state) {
+    return (["codex", "deepseek", "kimi"] as const).some((providerId) => {
+      const provider = state.providers[providerId];
+      if (!provider.configured) return false;
+      const snapshot = provider.latestSnapshot;
+      return !snapshot || isCapturedAtStale(snapshot.data.capturedAt, nowMs, maxAgeMs);
+    });
+  }
+  return isSnapshotStale(state, nowMs, maxAgeMs);
 }
 
 export function isSnapshotStale(
@@ -119,6 +170,17 @@ export function isSnapshotStale(
   if (capturedAtMs === null) {
     return true;
   }
+  const ageMs = nowMs - capturedAtMs;
+  return ageMs > maxAgeMs || ageMs < -FUTURE_TIMESTAMP_TOLERANCE_MS;
+}
+
+function isCapturedAtStale(
+  capturedAt: string | null | undefined,
+  nowMs: number,
+  maxAgeMs: number,
+): boolean {
+  const capturedAtMs = capturedAtToEpochMs(capturedAt);
+  if (capturedAtMs === null) return true;
   const ageMs = nowMs - capturedAtMs;
   return ageMs > maxAgeMs || ageMs < -FUTURE_TIMESTAMP_TOLERANCE_MS;
 }

@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type Event } from "@tauri-apps/api/event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DetailsPanel from "$lib/components/DetailsPanel.svelte";
-import type { AppState, UpdateStatus } from "$lib/types/usage";
+import type {
+  AppState,
+  QuotaSnapshot,
+  RefreshProvidersResult,
+  UpdateStatus,
+} from "$lib/types/usage";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve()),
@@ -13,24 +18,50 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-const appState: AppState = {
-  version: 4,
-  latestSnapshot: {
-    id: "app-server-1",
-    source: "codex-app-server",
-    capturedAt: "unix:1781769600",
-    weekly: {
-      remainingPercent: 46,
-      resetAt: "unix:1782190800",
-      resetCountdownSeconds: null,
-    },
-    planType: "plus",
-    creditsBalance: "12",
-    resetCreditsAvailable: 1,
-    rawText: "",
-    statusMessage: "已通过 Codex App Server 更新额度。",
-    warnings: [],
+const snapshot: QuotaSnapshot = {
+  id: "app-server-1",
+  source: "codex-app-server",
+  capturedAt: "unix:1781769600",
+  weekly: {
+    remainingPercent: 46,
+    resetAt: "unix:1782190800",
+    resetCountdownSeconds: null,
   },
+  planType: "plus",
+  creditsBalance: "12",
+  resetCreditsAvailable: 1,
+  rawText: "",
+  statusMessage: "已通过 Codex App Server 更新额度。",
+  warnings: [],
+};
+
+const appState: AppState = {
+  version: 5,
+  revision: 1,
+  providers: {
+    codex: {
+      configured: true,
+      latestSnapshot: { provider: "codex", data: snapshot },
+      lastAttemptAt: snapshot.capturedAt,
+      health: "fresh",
+      errorCategory: null,
+    },
+    deepseek: {
+      configured: false,
+      latestSnapshot: null,
+      lastAttemptAt: null,
+      health: "not-configured",
+      errorCategory: null,
+    },
+    kimi: {
+      configured: false,
+      latestSnapshot: null,
+      lastAttemptAt: null,
+      health: "not-configured",
+      errorCategory: null,
+    },
+  },
+  latestSnapshot: snapshot,
   storageStatus: "ready",
   storagePath: "C:\\QuotaDock\\usage-state.json",
   backupPath: null,
@@ -48,9 +79,56 @@ const appState: AppState = {
   settings: {
     automaticUpdateChecks: true,
     lowQuotaNotifications: false,
+    floatingProviderIds: ["codex"],
   },
   recoveryNotice: null,
 };
+
+function connectedState(): AppState {
+  return {
+    ...appState,
+    providers: {
+      ...appState.providers,
+      deepseek: {
+        configured: true,
+        latestSnapshot: {
+          provider: "deepseek",
+          data: {
+            id: "deepseek-1",
+            capturedAt: "unix:1781769600",
+            isAvailable: false,
+            balances: [
+              { currency: "USD", totalBalance: "10.001", grantedBalance: "10.001", toppedUpBalance: "0.000" },
+              { currency: "CNY", totalBalance: "0.00", grantedBalance: "0.00", toppedUpBalance: "0.00" },
+            ],
+          },
+        },
+        lastAttemptAt: "unix:1781769600",
+        health: "fresh",
+        errorCategory: null,
+      },
+      kimi: {
+        configured: true,
+        latestSnapshot: {
+          provider: "kimi",
+          data: {
+            id: "kimi-1",
+            capturedAt: "unix:1781769600",
+            region: "china",
+            currency: "CNY",
+            availableBalance: "0",
+            cashBalance: "-1.25",
+            voucherBalance: "0",
+          },
+        },
+        lastAttemptAt: "unix:1781769600",
+        health: "fresh",
+        errorCategory: null,
+      },
+    },
+    settings: { ...appState.settings, floatingProviderIds: ["codex", "deepseek"] },
+  };
+}
 
 const idleUpdateStatus: UpdateStatus = {
   currentVersion: "0.5.4",
@@ -68,12 +146,14 @@ let checkedUpdateStatus: UpdateStatus;
 let checkedUpdateStatusPromise: Promise<UpdateStatus> | null;
 let installedUpdateStatus: UpdateStatus;
 let updateEventListener: ((event: Event<UpdateStatus>) => void) | null;
+let providerRefreshResponse: RefreshProvidersResult | null;
 
 beforeEach(() => {
   initialUpdateStatus = idleUpdateStatus;
   initialUpdateStatusPromise = null;
   checkedUpdateStatusPromise = null;
   updateEventListener = null;
+  providerRefreshResponse = null;
   checkedUpdateStatus = {
     ...idleUpdateStatus,
     phase: "error",
@@ -112,6 +192,13 @@ beforeEach(() => {
         signedUpdatesEnabled: true,
       });
     }
+    if (command === "get_provider_credential_status") {
+      return Promise.resolve([
+        { providerId: "deepseek", region: null, availability: "not-configured" },
+        { providerId: "kimi", region: "china", availability: "not-configured" },
+      ]);
+    }
+    if (command === "get_app_state") return Promise.resolve(appState);
     if (command === "update_settings") {
       return Promise.resolve({
         ...appState,
@@ -130,6 +217,9 @@ beforeEach(() => {
     if (command === "install_downloaded_update") {
       return Promise.resolve(installedUpdateStatus);
     }
+    if (command === "refresh_provider" && providerRefreshResponse) {
+      return Promise.resolve(providerRefreshResponse);
+    }
     return Promise.resolve();
   });
 });
@@ -137,6 +227,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown })
     .__TAURI_INTERNALS__;
 });
@@ -150,7 +241,7 @@ describe("DetailsPanel", () => {
     expect(screen.getByText("46%")).toBeTruthy();
     expect(screen.getByText("2 个采样点")).toBeTruthy();
     expect(screen.getByText("1 周额度趋势")).toBeTruthy();
-    expect(container.querySelectorAll(".quota-card")).toHaveLength(1);
+    expect(container.querySelectorAll(".quota-card")).toHaveLength(3);
     expect(container.querySelectorAll(".series")).toHaveLength(1);
     expect(container.textContent).not.toContain(["5", "小时"].join(""));
     await waitFor(() => {
@@ -176,7 +267,194 @@ describe("DetailsPanel", () => {
       screen.getByRole("button", { name: /打开 Codex 官方 Usage Dashboard/ }),
     );
 
-    expect(invoke).toHaveBeenCalledWith("open_official_usage");
+    expect(invoke).toHaveBeenCalledWith("open_provider_portal", {
+      provider: "codex",
+    });
+  });
+
+  it("shows every DeepSeek currency and preserves Kimi zero and negative balances", () => {
+    render(DetailsPanel, { props: { appState: connectedState() } });
+
+    expect(screen.getByText("USD 充值余额")).toBeTruthy();
+    expect(screen.getByText("$0.000")).toBeTruthy();
+    expect(screen.getByText("CNY 充值余额")).toBeTruthy();
+    expect(screen.getByText("¥0.00")).toBeTruthy();
+    expect(screen.getByText(/账户余额接口：不可用/)).toBeTruthy();
+    expect(screen.getByText("¥-1.25")).toBeTruthy();
+    expect(screen.getAllByText("¥0").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/区域：中国站/)).toBeTruthy();
+  });
+
+  it("keeps full-precision DeepSeek totals accessible without ellipsis", () => {
+    const current = connectedState();
+    const deepseek = current.providers.deepseek.latestSnapshot;
+    if (deepseek?.provider !== "deepseek") throw new Error("fixture mismatch");
+    deepseek.data.balances[0] = {
+      currency: "USD",
+      totalBalance: "12345678901234567890.123456789",
+      grantedBalance: "98765432109876543210.000000001",
+      toppedUpBalance: "0.000000000",
+    };
+    const { container } = render(DetailsPanel, { props: { appState: current } });
+    const detail = container.querySelector<HTMLElement>(".balance-detail")!;
+    expect(detail.textContent).toContain("$12345678901234567890.123456789");
+    expect(detail.textContent).toContain("$98765432109876543210.000000001");
+    expect(detail.classList.contains("balance-detail")).toBe(true);
+    expect(detail.title).toContain("$12345678901234567890.123456789");
+    expect(detail.title).toContain("$98765432109876543210.000000001");
+  });
+
+  it("marks all configured cards busy during refresh-all without showing fresh", () => {
+    const { container } = render(DetailsPanel, {
+      props: { appState: connectedState(), refreshing: true },
+    });
+    for (const provider of ["codex", "deepseek", "kimi"]) {
+      const card = container.querySelector(`[data-provider="${provider}"]`)!;
+      expect(card.getAttribute("aria-busy")).toBe("true");
+      const badge = card.querySelector(".provider-status")!;
+      expect(badge.getAttribute("data-health")).toBe("refreshing");
+      expect(badge.textContent).toBe("读取中");
+    }
+  });
+
+  it("derives matching stale data-health after the low-frequency clock crosses the threshold", async () => {
+    vi.useFakeTimers();
+    const current = connectedState();
+    const capturedAtMs = 1_781_769_600 * 1000;
+    vi.setSystemTime(capturedAtMs + 9 * 60_000 + 45_000);
+    const view = render(DetailsPanel, { props: { appState: current } });
+    const badge = view.container.querySelector('[data-provider="deepseek"] .provider-status')!;
+    expect(badge.getAttribute("data-health")).toBe("fresh");
+    expect(badge.textContent).toBe("已更新");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(badge.getAttribute("data-health")).toBe("stale");
+    expect(badge.textContent).toBe("数据陈旧");
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("announces a DeepSeek refresh without clearing the visible Codex error", async () => {
+    const next = connectedState();
+    next.revision = 2;
+    providerRefreshResponse = {
+      appState: next,
+      providerResults: [{
+        providerId: "deepseek",
+        outcome: "updated",
+        message: "DeepSeek 余额已更新。",
+        errorCategory: null,
+      }],
+      anyUpdated: true,
+      message: "DeepSeek 余额已更新。",
+    };
+    const onStateChange = vi.fn();
+    const { container } = render(DetailsPanel, {
+      props: {
+        appState: connectedState(),
+        errorMessage: "Codex 刷新失败。",
+        onStateChange,
+      },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "刷新 DeepSeek" }));
+    await waitFor(() => expect(onStateChange).toHaveBeenCalledWith(next));
+    expect(container.querySelector(".status-strip")?.textContent).toContain("Codex 刷新失败。");
+    expect(screen.getByTestId("provider-announcement").textContent).toContain("DeepSeek 余额已更新。");
+  });
+
+  it("deduplicates provider announcements already exposed by the visible status", async () => {
+    const view = render(DetailsPanel, {
+      props: {
+        appState: connectedState(),
+        errorMessage: "Codex 刷新失败。",
+        providerAnnouncement: "Codex 刷新失败。",
+      },
+    });
+    expect(view.container.querySelector(".status-strip")?.textContent).toContain("Codex 刷新失败。");
+    expect(screen.getByTestId("provider-announcement").textContent).toBe("");
+
+    await view.rerender({
+      appState: connectedState(),
+      errorMessage: null,
+      noticeMessage: "全部供应商额度已更新。",
+      providerAnnouncement: "全部供应商额度已更新。",
+    });
+    expect(view.container.querySelector(".status-strip")?.textContent).toContain("全部供应商额度已更新。");
+    expect(screen.getByTestId("provider-announcement").textContent).toBe("");
+
+    await view.rerender({
+      appState: connectedState(),
+      noticeMessage: "全部供应商额度已更新。",
+      providerAnnouncement: "DeepSeek 余额已更新。",
+    });
+    expect(screen.getByTestId("provider-announcement").textContent).toBe("DeepSeek 余额已更新。");
+  });
+
+  it("persists the complete canonical floating selection and prevents removing the last item", async () => {
+    render(DetailsPanel, { props: { appState: connectedState() } });
+
+    await fireEvent.click(
+      screen.getByRole("checkbox", { name: "将 Kimi 加入悬浮条轮播" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { floatingProviderIds: ["codex", "deepseek", "kimi"] },
+    });
+
+    cleanup();
+    render(DetailsPanel, { props: { appState } });
+    expect(
+      screen.getByRole("checkbox", { name: "将 Codex 加入悬浮条轮播" }),
+    ).toHaveProperty("disabled", true);
+    expect(
+      screen.getByRole("checkbox", { name: "将 DeepSeek 加入悬浮条轮播" }),
+    ).toHaveProperty("disabled", true);
+  });
+
+  it("uses password-only credential fields, clears the submitted secret, and never refills it", async () => {
+    const current = connectedState();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_app_state") return Promise.resolve(current);
+      if (command === "get_provider_credential_status") return Promise.resolve([]);
+      if (command === "get_diagnostics") return Promise.resolve({
+        appVersion: "0.5.4", codexPath: null, codexVersion: null,
+        latestSource: null, latestSuccessAt: null, storagePath: null,
+        storageStatus: "ready", startupEnabled: false, signedUpdatesEnabled: true,
+      });
+      if (command === "get_update_status") return Promise.resolve(idleUpdateStatus);
+      return Promise.resolve({ providerId: "deepseek", region: null, availability: "configured" });
+    });
+    const { container } = render(DetailsPanel, { props: { appState: current } });
+    const input = container.querySelector<HTMLInputElement>("#deepseek-key")!;
+    expect(input.type).toBe("password");
+    expect(input.autocomplete).toBe("off");
+    expect(input.getAttribute("spellcheck")).toBe("false");
+    expect(input.getAttribute("autocapitalize")).toBe("none");
+    expect(screen.getByRole("button", { name: "替换 DeepSeek API Key" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "替换 Kimi 国内站 API Key" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "删除 Kimi 国内站 API Key" })).toBeTruthy();
+    await fireEvent.input(input, { target: { value: "sk-local-test-value" } });
+    await fireEvent.click(screen.getByRole("button", { name: "替换 DeepSeek API Key" }));
+    await waitFor(() => expect(input.value).toBe(""));
+    expect(container.textContent).not.toContain("sk-local-test-value");
+    expect(invoke).toHaveBeenCalledWith("set_provider_credential", {
+      provider: "deepseek",
+      region: null,
+      secret: "sk-local-test-value",
+    });
+  });
+
+  it("confirms credential deletion and uses only fixed provider portal commands", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(DetailsPanel, { props: { appState: connectedState() } });
+    await fireEvent.click(screen.getByRole("button", { name: "删除 DeepSeek API Key" }));
+    expect(confirm).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("delete_provider_credential", {
+      provider: "deepseek",
+      region: null,
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /打开 Kimi 官方账户页/ }));
+    expect(invoke).toHaveBeenCalledWith("open_provider_portal", { provider: "kimi" });
+    confirm.mockRestore();
   });
 
   it("shows background download progress as a polite live status", async () => {
@@ -199,7 +477,7 @@ describe("DetailsPanel", () => {
       "disabled",
       true,
     );
-    expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");
+    expect(document.querySelector(".update-copy")?.getAttribute("aria-live")).toBe("polite");
   });
 
   it("installs only after a downloaded update is ready", async () => {
@@ -215,7 +493,7 @@ describe("DetailsPanel", () => {
 
     const installButton = await screen.findByRole("button", { name: "立即安装" });
     expect(screen.getByText("可安装")).toBeTruthy();
-    expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");
+    expect(document.querySelector(".update-copy")?.getAttribute("aria-live")).toBe("polite");
     await fireEvent.click(installButton);
 
     expect(invoke).toHaveBeenCalledWith("install_downloaded_update");

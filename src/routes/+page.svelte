@@ -4,7 +4,7 @@
   import DetailsPanel from "$lib/components/DetailsPanel.svelte";
   import QuotaDashboard from "$lib/components/QuotaDashboard.svelte";
   import { createUsageState } from "$lib/state/usageState.svelte";
-  import type { RefreshUsageResult } from "$lib/types/usage";
+  import type { RefreshProvidersResult, RefreshUsageResult } from "$lib/types/usage";
 
   const usage = createUsageState();
   let surface: "pending" | "main" | "details" = "pending";
@@ -30,6 +30,11 @@
           usage.applyRefreshResult(event.payload);
         })
       : null;
+    const unlistenProviders = hasTauriRuntime()
+      ? listen<RefreshProvidersResult>("provider-state-changed", (event) => {
+          usage.applyProviderResult(event.payload);
+        })
+      : null;
     const refreshIfVisible = () => {
       if (document.visibilityState === "visible") {
         void usage.refreshIfStale();
@@ -52,6 +57,9 @@
     return () => {
       if (unlisten) {
         void unlisten.then((dispose) => dispose());
+      }
+      if (unlistenProviders) {
+        void unlistenProviders.then((dispose) => dispose());
       }
       if (canRefresh) {
         document.removeEventListener("visibilitychange", refreshIfVisible);
@@ -76,12 +84,9 @@
     refreshing={usage.refreshing}
     errorMessage={usage.errorMessage}
     noticeMessage={usage.noticeMessage}
-    onRefresh={() => usage.refreshUsage()}
-    onStateChange={(state) => {
-      usage.appState = state;
-      usage.errorMessage = null;
-      usage.noticeMessage = state.statusMessage;
-    }}
+    providerAnnouncement={usage.providerAnnouncement}
+    onRefresh={() => usage.refreshProviders()}
+    onStateChange={(state) => usage.applyAppState(state)}
   />
 {:else if surface === "main"}
   <QuotaDashboard
@@ -90,5 +95,6 @@
     refreshing={usage.refreshing}
     errorMessage={usage.errorMessage}
     noticeMessage={usage.noticeMessage}
+    providerAnnouncement={usage.providerAnnouncement}
   />
 {/if}

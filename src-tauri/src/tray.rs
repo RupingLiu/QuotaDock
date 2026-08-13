@@ -117,7 +117,7 @@ fn build_menu(app: &AppHandle, status_label: &str) -> tauri::Result<Menu<Wry>> {
     MenuBuilder::new(app)
         .text(MENU_TOGGLE_VISIBILITY, visibility_label)
         .text(MENU_DETAILS, "查看详情与趋势")
-        .text(MENU_REFRESH_USAGE, "刷新额度")
+        .text(MENU_REFRESH_USAGE, "刷新全部")
         .text(MENU_OFFICIAL_USAGE, "打开官方用量页面")
         .separator()
         .text(MENU_STARTUP, startup_label)
@@ -159,6 +159,7 @@ fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                 SettingsPatch {
                     automatic_update_checks: Some(enabled),
                     low_quota_notifications: None,
+                    floating_provider_ids: None,
                 },
             );
             refresh_menu(app);
@@ -172,6 +173,7 @@ fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                 SettingsPatch {
                     automatic_update_checks: None,
                     low_quota_notifications: Some(enabled),
+                    floating_provider_ids: None,
                 },
             ) {
                 set_menu_status_temporarily(app, error);

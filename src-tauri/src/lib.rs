@@ -1,7 +1,10 @@
 #![cfg_attr(test, allow(dead_code))]
 
 mod app_server;
+mod credentials;
+mod http_client;
 mod models;
+mod providers;
 mod startup;
 mod status_parser;
 #[cfg(feature = "desktop")]
@@ -42,7 +45,7 @@ pub fn run() {
         Ok(())
     });
 
-    builder
+    let app = builder
         .on_window_event(|window, event| {
             #[cfg(feature = "desktop")]
             match window.label() {
@@ -71,7 +74,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
             commands::refresh_usage,
+            commands::refresh_providers,
+            commands::refresh_provider,
             commands::show_dashboard_context_menu,
+            commands::set_provider_credential,
+            commands::delete_provider_credential,
+            commands::get_provider_credential_status,
             commands::update_settings,
             commands::acknowledge_recovery,
             commands::get_diagnostics,
@@ -79,13 +87,19 @@ pub fn run() {
             commands::show_details,
             commands::hide_details,
             commands::open_official_usage,
+            details::open_provider_portal,
             details::open_latest_release,
             updates::get_update_status,
             updates::check_for_updates,
             updates::install_downloaded_update
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running tauri application");
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            commands::stop_auto_refresh(app);
+        }
+    });
 }
 
 #[cfg(test)]

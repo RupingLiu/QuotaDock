@@ -1,4 +1,10 @@
-import type { QuotaReading, SnapshotSource, StorageStatus } from "$lib/types/usage";
+import type {
+  ProviderErrorCategory,
+  ProviderHealth,
+  QuotaReading,
+  SnapshotSource,
+  StorageStatus,
+} from "$lib/types/usage";
 
 export type ResetFormatOptions = {
   capturedAt?: string | null;
@@ -14,6 +20,56 @@ export function progressValue(value: number | null): number {
     return 0;
   }
   return Math.max(0, Math.min(100, value));
+}
+
+export function formatBalance(amount: string | null | undefined, currency: string): string {
+  if (amount === null || amount === undefined || amount === "") return "--";
+  const prefix = currency === "CNY" ? "¥" : currency === "USD" ? "$" : `${currency} `;
+  return `${prefix}${amount}`;
+}
+
+export function providerHealthLabel(health: ProviderHealth): string {
+  switch (health) {
+    case "fresh":
+      return "已更新";
+    case "refreshing":
+      return "读取中";
+    case "stale":
+      return "数据陈旧";
+    case "error":
+      return "刷新失败";
+    case "not-configured":
+      return "未配置";
+    default:
+      return "等待更新";
+  }
+}
+
+export function providerErrorLabel(category: ProviderErrorCategory | null): string | null {
+  switch (category) {
+    case "busy":
+      return "已有查询正在进行";
+    case "unauthorized":
+      return "API Key 无效或无权访问";
+    case "insufficient-balance":
+      return "账户余额不足或已停用";
+    case "rate-limited":
+      return "请求过于频繁，请稍后重试";
+    case "timeout":
+      return "查询超时";
+    case "network":
+      return "网络连接失败";
+    case "server":
+      return "供应商服务暂时不可用";
+    case "invalid-response":
+      return "供应商返回了无法识别的数据";
+    case "credential-store":
+      return "Windows 凭据存储不可用";
+    case "not-configured":
+      return "尚未配置 API Key";
+    default:
+      return null;
+  }
 }
 
 export function formatReset(

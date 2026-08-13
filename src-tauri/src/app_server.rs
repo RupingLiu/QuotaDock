@@ -60,14 +60,19 @@ pub fn fetch_rate_limits(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| format!("启动 Codex app-server 失败：{error}"))?;
-    let stdout = child
+    // Own the child immediately so every error after spawn (including missing
+    // pipes or reader-thread creation) terminates and reaps it.
+    let mut guard = ChildGuard::new(child);
+    let stdout = guard
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| "无法读取 Codex app-server 输出。".to_string())?;
-    let mut stdin = child
+    let mut stdin = guard
+        .child_mut()
         .stdin
         .take()
         .ok_or_else(|| "无法写入 Codex app-server。".to_string())?;
@@ -83,7 +88,6 @@ pub fn fetch_rate_limits(
         })
         .map_err(|error| format!("启动 app-server 读取线程失败：{error}"))?;
 
-    let mut guard = ChildGuard::new(child);
     write_message(
         &mut stdin,
         &json!({
